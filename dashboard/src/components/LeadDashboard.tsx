@@ -1,0 +1,394 @@
+'use client';
+
+import React, { useState, useTransition } from 'react';
+import { Lead } from '@/lib/db';
+import LeadCard from '@/components/LeadCard';
+import { getLeadsByStrategy, getStrategyStats, StrategyFilter, StrategyStats } from '@/app/actions';
+import {
+  Sparkles,
+  RefreshCw,
+  Search,
+  CheckCheck,
+  Zap,
+  TrendingUp,
+  Inbox,
+  Filter,
+  Share2,
+  Wrench,
+  Cpu,
+  Loader2,
+} from 'lucide-react';
+
+interface LeadDashboardProps {
+  initialLeads: Lead[];
+  initialStats: StrategyStats;
+}
+
+type TabKey = 'no_website' | 'legacy_redesign' | 'ai_automation';
+
+interface TabDefinition {
+  id: TabKey;
+  label: string;
+  description: string;
+  icon: React.ComponentType<{ className?: string }>;
+  color: string;
+  activeBg: string;
+  badgeBg: string;
+}
+
+const STRATEGY_TABS: TabDefinition[] = [
+  {
+    id: 'no_website',
+    label: 'No Website',
+    description: 'Social profile presence only (Instagram / Facebook)',
+    icon: Share2,
+    color: 'text-fuchsia-400',
+    activeBg: 'bg-fuchsia-500/10 border-fuchsia-500/50 text-white shadow-lg shadow-fuchsia-500/10',
+    badgeBg: 'bg-fuchsia-500/20 text-fuchsia-300 border border-fuchsia-500/30',
+  },
+  {
+    id: 'legacy_redesign',
+    label: 'Legacy Redesign',
+    description: 'Outdated design, HTTP, or non-responsive mobile DOM',
+    icon: Wrench,
+    color: 'text-amber-400',
+    activeBg: 'bg-amber-500/10 border-amber-500/50 text-white shadow-lg shadow-amber-500/10',
+    badgeBg: 'bg-amber-500/20 text-amber-300 border border-amber-500/30',
+  },
+  {
+    id: 'ai_automation',
+    label: 'AI Automations',
+    description: 'Modern sites lacking self-serve scheduling / AI chatbots',
+    icon: Cpu,
+    color: 'text-emerald-400',
+    activeBg: 'bg-emerald-500/10 border-emerald-500/50 text-white shadow-lg shadow-emerald-500/10',
+    badgeBg: 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30',
+  },
+];
+
+export default function LeadDashboard({ initialLeads, initialStats }: LeadDashboardProps) {
+  const [activeTab, setActiveTab] = useState<TabKey>('no_website');
+  const [leadsByTab, setLeadsByTab] = useState<Record<TabKey, Lead[]>>({
+    no_website: initialLeads,
+    legacy_redesign: [],
+    ai_automation: [],
+  });
+  const [loadedTabs, setLoadedTabs] = useState<Record<TabKey, boolean>>({
+    no_website: true,
+    legacy_redesign: false,
+    ai_automation: false,
+  });
+  const [stats, setStats] = useState<StrategyStats>(initialStats);
+  const [searchTerm, setSearchTerm] = useState('');
+  const [selectedChannel, setSelectedChannel] = useState<'all' | 'email' | 'linkedin' | 'instagram'>('all');
+  const [lastDispatched, setLastDispatched] = useState<string | null>(null);
+  const [isPending, startTransition] = useTransition();
+
+  const currentLeads = leadsByTab[activeTab] || [];
+
+  // Tab switcher with dynamic data fetching
+  const handleTabChange = (tabId: TabKey) => {
+    setActiveTab(tabId);
+
+    // If tab hasn't been loaded yet, fetch its initial 15 leads
+    if (!loadedTabs[tabId]) {
+      startTransition(async () => {
+        try {
+          const fetched = await getLeadsByStrategy(tabId, 15);
+          setLeadsByTab((prev) => ({ ...prev, [tabId]: fetched }));
+          setLoadedTabs((prev) => ({ ...prev, [tabId]: true }));
+        } catch (err) {
+          console.error(`Failed to fetch leads for tab ${tabId}:`, err);
+        }
+      });
+    }
+  };
+
+  // Re-fetch the latest batch of 15 leads for the current active tab + refresh stats
+  const handleRefreshCurrentTab = () => {
+    startTransition(async () => {
+      try {
+        const [freshLeads, freshStats] = await Promise.all([
+          getLeadsByStrategy(activeTab, 15),
+          getStrategyStats(),
+        ]);
+        setLeadsByTab((prev) => ({ ...prev, [activeTab]: freshLeads }));
+        setStats(freshStats);
+      } catch (err) {
+        console.error('Failed to refresh tab:', err);
+      }
+    });
+  };
+
+  // Optimistic handler for lead dispatch
+  const handleLeadContacted = (id: number, businessName: string) => {
+    // 1. Remove card optimistically from current active tab grid
+    setLeadsByTab((prev) => ({
+      ...prev,
+      [activeTab]: prev[activeTab].filter((lead) => lead.id !== id),
+    }));
+
+    // 2. Decrement corresponding strategy count & update stats optimistically
+    setStats((prev) => ({
+      ...prev,
+      [activeTab]: Math.max(0, prev[activeTab] - 1),
+      total_pending: Math.max(0, prev.total_pending - 1),
+      total_contacted: prev.total_contacted + 1,
+    }));
+
+    // 3. Show dispatch notification
+    setLastDispatched(businessName);
+    setTimeout(() => {
+      setLastDispatched((current) => (current === businessName ? null : current));
+    }, 4000);
+  };
+
+  // Client-side search and channel filtering
+  const filteredLeads = currentLeads.filter((lead) => {
+    const matchesSearch =
+      lead.business_name.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      (lead.city && lead.city.toLowerCase().includes(searchTerm.toLowerCase())) ||
+      (lead.email && lead.email.toLowerCase().includes(searchTerm.toLowerCase()));
+
+    if (!matchesSearch) return false;
+
+    if (selectedChannel === 'email') return !!lead.email;
+    if (selectedChannel === 'linkedin') return !!lead.linkedin_url;
+    if (selectedChannel === 'instagram') return !!lead.instagram_url;
+
+    return true;
+  });
+
+  const activeTabDef = STRATEGY_TABS.find((t) => t.id === activeTab)!;
+
+  return (
+    <div className="space-y-6">
+      {/* Toast Notification for Spark Dispatch */}
+      {lastDispatched && (
+        <div className="fixed bottom-6 right-6 z-50 flex items-center gap-3 rounded-xl border border-emerald-500/40 bg-slate-900/95 px-4 py-3 shadow-2xl backdrop-blur-md animate-in slide-in-from-bottom-5">
+          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-emerald-500/20 text-emerald-400">
+            <CheckCheck className="h-5 w-5" />
+          </div>
+          <div>
+            <p className="text-xs font-semibold text-white">Spark Dossier Copied & Dispatched!</p>
+            <p className="text-xs text-slate-400">
+              <span className="font-medium text-emerald-300">{lastDispatched}</span> updated to{' '}
+              <span className="text-white font-mono">contacted</span> in PostgreSQL.
+            </p>
+          </div>
+        </div>
+      )}
+
+      {/* KPI Stats Ribbon */}
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+        {/* Active Tab Quota Progress */}
+        <div className="relative overflow-hidden rounded-xl border border-slate-800 bg-slate-900/60 p-4 backdrop-blur-sm">
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-medium text-slate-400">
+              {activeTabDef.label} Batch
+            </span>
+            <div className="flex h-7 w-7 items-center justify-center rounded-md bg-indigo-500/10 text-indigo-400">
+              <Zap className="h-4 w-4" />
+            </div>
+          </div>
+          <div className="mt-2 flex items-baseline gap-2">
+            <span className="text-2xl font-bold text-white">{currentLeads.length}</span>
+            <span className="text-xs text-slate-400">/ 15 in active view</span>
+          </div>
+          <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-slate-800">
+            <div
+              className="h-full bg-gradient-to-r from-indigo-500 to-violet-500 transition-all duration-500"
+              style={{ width: `${Math.min(100, (currentLeads.length / 15) * 100)}%` }}
+            />
+          </div>
+        </div>
+
+        {/* Total Database Pending */}
+        <div className="rounded-xl border border-slate-800 bg-slate-900/60 p-4 backdrop-blur-sm">
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-medium text-slate-400">Total Uncontacted Pipeline</span>
+            <div className="flex h-7 w-7 items-center justify-center rounded-md bg-amber-500/10 text-amber-400">
+              <Inbox className="h-4 w-4" />
+            </div>
+          </div>
+          <div className="mt-2 flex items-baseline gap-2">
+            <span className="text-2xl font-bold text-amber-400">{stats.total_pending}</span>
+            <span className="text-xs text-slate-400">leads awaiting outreach</span>
+          </div>
+        </div>
+
+        {/* Total Contacted */}
+        <div className="rounded-xl border border-slate-800 bg-slate-900/60 p-4 backdrop-blur-sm">
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-medium text-slate-400">Total Dispatched / Contacted</span>
+            <div className="flex h-7 w-7 items-center justify-center rounded-md bg-emerald-500/10 text-emerald-400">
+              <TrendingUp className="h-4 w-4" />
+            </div>
+          </div>
+          <div className="mt-2 flex items-baseline gap-2">
+            <span className="text-2xl font-bold text-emerald-400">{stats.total_contacted}</span>
+            <span className="text-xs text-slate-400">leads reached</span>
+          </div>
+        </div>
+      </div>
+
+      {/* Primary Tab Navigation: The 3 Outcome-Based Strategies */}
+      <div className="rounded-2xl border border-slate-800 bg-slate-900/80 p-2 backdrop-blur-md">
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
+          {STRATEGY_TABS.map((tab) => {
+            const Icon = tab.icon;
+            const isActive = activeTab === tab.id;
+            const count = stats[tab.id];
+
+            return (
+              <button
+                key={tab.id}
+                type="button"
+                onClick={() => handleTabChange(tab.id)}
+                className={`flex items-center justify-between rounded-xl border p-3.5 transition-all text-left cursor-pointer ${
+                  isActive
+                    ? tab.activeBg
+                    : 'border-slate-800/80 bg-slate-950/40 text-slate-400 hover:border-slate-700 hover:bg-slate-900/60 hover:text-slate-200'
+                }`}
+              >
+                <div className="flex items-center gap-3">
+                  <div
+                    className={`flex h-9 w-9 items-center justify-center rounded-lg ${
+                      isActive ? 'bg-white/10 text-white' : 'bg-slate-800/80 ' + tab.color
+                    }`}
+                  >
+                    <Icon className="h-4 w-4" />
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm font-semibold tracking-tight">{tab.label}</span>
+                    </div>
+                    <p className="text-[11px] text-slate-400 line-clamp-1 mt-0.5">
+                      {tab.description}
+                    </p>
+                  </div>
+                </div>
+
+                {/* Tab Count Badge */}
+                <span
+                  className={`ml-2 inline-flex items-center rounded-full px-2.5 py-1 text-xs font-semibold shrink-0 ${
+                    isActive
+                      ? tab.badgeBg
+                      : 'bg-slate-800/80 text-slate-400 border border-slate-700/50'
+                  }`}
+                >
+                  {count} leads
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Control Bar: Search, Channel Filter, and Refresh */}
+      <div className="flex flex-col md:flex-row items-stretch md:items-center justify-between gap-3 rounded-xl border border-slate-800 bg-slate-900/60 p-3 backdrop-blur-sm">
+        {/* Search Input */}
+        <div className="relative flex-1">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-500" />
+          <input
+            type="text"
+            placeholder={`Filter ${activeTabDef.label} leads by business name, city, or email...`}
+            value={searchTerm}
+            onChange={(e) => setSearchTerm(e.target.value)}
+            className="w-full rounded-lg border border-slate-800 bg-slate-950/80 py-2 pl-9 pr-4 text-xs text-white placeholder-slate-500 focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+          />
+        </div>
+
+        {/* Channel Filter Chips */}
+        <div className="flex items-center gap-1.5 overflow-x-auto pb-1 md:pb-0">
+          <Filter className="h-3.5 w-3.5 text-slate-500 shrink-0 ml-1 mr-1" />
+          {(['all', 'email', 'linkedin', 'instagram'] as const).map((channel) => (
+            <button
+              key={channel}
+              type="button"
+              onClick={() => setSelectedChannel(channel)}
+              className={`rounded-lg px-2.5 py-1.5 text-xs font-medium capitalize transition-all cursor-pointer ${
+                selectedChannel === channel
+                  ? 'bg-indigo-600 text-white shadow-sm'
+                  : 'bg-slate-800/60 text-slate-400 hover:bg-slate-800 hover:text-slate-200'
+              }`}
+            >
+              {channel === 'all' ? 'All Channels' : channel}
+            </button>
+          ))}
+        </div>
+
+        {/* Refresh Current Strategy Batch Button */}
+        <button
+          type="button"
+          onClick={handleRefreshCurrentTab}
+          disabled={isPending}
+          className="flex items-center justify-center gap-1.5 rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-xs font-medium text-slate-200 hover:bg-slate-700 hover:text-white transition-all cursor-pointer shrink-0 disabled:opacity-60"
+        >
+          <RefreshCw className={`h-3.5 w-3.5 ${isPending ? 'animate-spin text-indigo-400' : ''}`} />
+          <span>{isPending ? 'Refreshing...' : `Refresh ${activeTabDef.label}`}</span>
+        </button>
+      </div>
+
+      {/* Main Responsive Grid of up to 15 Strategy Leads */}
+      {isPending ? (
+        <div className="flex flex-col items-center justify-center rounded-2xl border border-slate-800 bg-slate-900/40 p-16 text-center">
+          <Loader2 className="h-8 w-8 animate-spin text-indigo-400" />
+          <p className="mt-3 text-xs text-slate-400">Loading {activeTabDef.label} batch from PostgreSQL...</p>
+        </div>
+      ) : filteredLeads.length > 0 ? (
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
+          {filteredLeads.map((lead, idx) => (
+            <LeadCard
+              key={lead.id}
+              lead={lead}
+              index={idx}
+              onContacted={handleLeadContacted}
+            />
+          ))}
+        </div>
+      ) : currentLeads.length === 0 ? (
+        /* Empty State: All Leads in this Strategy Contacted or None Pending */
+        <div className="flex flex-col items-center justify-center rounded-2xl border border-dashed border-slate-800 bg-slate-900/40 p-12 text-center">
+          <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-emerald-500/10 text-emerald-400 shadow-inner">
+            <Sparkles className="h-7 w-7" />
+          </div>
+          <h3 className="mt-4 text-lg font-semibold text-white">
+            No Pending Leads in {activeTabDef.label}
+          </h3>
+          <p className="mt-1 max-w-md text-xs text-slate-400 leading-relaxed">
+            All leads in this category have been dispatched and marked as contacted in PostgreSQL,
+            or no leads matching this campaign strategy were found. Run the Python pipeline or select
+            another strategy tab above.
+          </p>
+          <button
+            type="button"
+            onClick={handleRefreshCurrentTab}
+            disabled={isPending}
+            className="mt-5 inline-flex items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2 text-xs font-semibold text-white shadow-lg hover:bg-indigo-500 transition-all cursor-pointer"
+          >
+            <RefreshCw className={`h-4 w-4 ${isPending ? 'animate-spin' : ''}`} />
+            <span>Check for New Pending Leads</span>
+          </button>
+        </div>
+      ) : (
+        /* Filter Empty State */
+        <div className="flex flex-col items-center justify-center rounded-xl border border-slate-800 bg-slate-900/40 p-8 text-center">
+          <p className="text-xs text-slate-400">
+            No leads match your current search or channel filter in {activeTabDef.label}.
+          </p>
+          <button
+            type="button"
+            onClick={() => {
+              setSearchTerm('');
+              setSelectedChannel('all');
+            }}
+            className="mt-2 text-xs font-medium text-indigo-400 hover:text-indigo-300 cursor-pointer"
+          >
+            Clear search & filters
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}

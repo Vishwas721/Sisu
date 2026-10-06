@@ -3,7 +3,7 @@
 import React, { useState, useTransition } from 'react';
 import { Lead } from '@/lib/db';
 import LeadCard from '@/components/LeadCard';
-import { getLeadsByStrategy, getStrategyStats, StrategyFilter, StrategyStats } from '@/app/actions';
+import { getLeadsByStrategy, getStrategyStats, markAllAsContacted, StrategyFilter, StrategyStats } from '@/app/actions';
 import {
   Sparkles,
   RefreshCw,
@@ -17,6 +17,8 @@ import {
   Wrench,
   Cpu,
   Loader2,
+  Copy,
+  AlertCircle,
 } from 'lucide-react';
 
 interface LeadDashboardProps {
@@ -82,6 +84,10 @@ export default function LeadDashboard({ initialLeads, initialStats }: LeadDashbo
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedChannel, setSelectedChannel] = useState<'all' | 'email' | 'linkedin' | 'instagram'>('all');
   const [lastDispatched, setLastDispatched] = useState<string | null>(null);
+  const [isBulkDispatching, setIsBulkDispatching] = useState(false);
+  const [isBulkDispatched, setIsBulkDispatched] = useState(false);
+  const [bulkToastMessage, setBulkToastMessage] = useState<string | null>(null);
+  const [bulkError, setBulkError] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
 
   const currentLeads = leadsByTab[activeTab] || [];
@@ -120,7 +126,7 @@ export default function LeadDashboard({ initialLeads, initialStats }: LeadDashbo
     });
   };
 
-  // Optimistic handler for lead dispatch
+  // Optimistic handler for individual lead dispatch
   const handleLeadContacted = (id: number, businessName: string) => {
     // 1. Remove card optimistically from current active tab grid
     setLeadsByTab((prev) => ({
@@ -159,11 +165,115 @@ export default function LeadDashboard({ initialLeads, initialStats }: LeadDashbo
     return true;
   });
 
+  /**
+   * Bulk Dispatch to Spark:
+   * 1. Iterates over currently visible leads state
+   * 2. Formats each lead into LLM-structured format:
+   *    --- LEAD [Index] ---
+   *    Business: [business_name]
+   *    Target Email: [email] (If no email, print the Instagram/Facebook URL)
+   *    Message:
+   *    [ai_drafted_message]
+   *    -------------------
+   * 3. Copies combined string to user clipboard
+   * 4. Calls Server Action markAllAsContacted(leadIds)
+   * 5. Optimistically clears the UI grid and updates counters
+   */
+  const handleBulkDispatch = async () => {
+    const leadsToDispatch = filteredLeads;
+    if (leadsToDispatch.length === 0 || isBulkDispatching) return;
+
+    setIsBulkDispatching(true);
+    setBulkError(null);
+
+    const leadIds = leadsToDispatch.map((lead) => lead.id);
+    const count = leadsToDispatch.length;
+
+    // Format all displayed leads into structured LLM string
+    const formattedPayload = leadsToDispatch
+      .map((lead, idx) => {
+        const targetContact =
+          lead.email?.trim() ||
+          lead.instagram_url?.trim() ||
+          (lead.website_url &&
+          (lead.website_url.includes('facebook.com') || lead.website_url.includes('instagram.com'))
+            ? lead.website_url.trim()
+            : null) ||
+          lead.website_url?.trim() ||
+          'No email or social profile URL available';
+
+        const message = lead.ai_drafted_message?.trim() || 'No AI message drafted for this lead.';
+
+        return [
+          `--- LEAD ${idx + 1} ---`,
+          `Business: ${lead.business_name}`,
+          `Target Email: ${targetContact}`,
+          `Message:`,
+          `${message}`,
+          `-------------------`,
+        ].join('\n');
+      })
+      .join('\n\n');
+
+    try {
+      // 1. Copy formatted text directly to clipboard
+      if (navigator?.clipboard?.writeText) {
+        await navigator.clipboard.writeText(formattedPayload);
+      } else {
+        const textArea = document.createElement('textarea');
+        textArea.value = formattedPayload;
+        textArea.style.position = 'fixed';
+        textArea.style.left = '-999999px';
+        document.body.appendChild(textArea);
+        textArea.select();
+        document.execCommand('copy');
+        document.body.removeChild(textArea);
+      }
+
+      // 2. Optimistically clear the UI grid for the current view
+      setLeadsByTab((prev) => ({
+        ...prev,
+        [activeTab]: prev[activeTab].filter((lead) => !leadIds.includes(lead.id)),
+      }));
+
+      // 3. Optimistically update KPI stats
+      setStats((prev) => ({
+        ...prev,
+        [activeTab]: Math.max(0, prev[activeTab] - count),
+        total_pending: Math.max(0, prev.total_pending - count),
+        total_contacted: prev.total_contacted + count,
+      }));
+
+      setIsBulkDispatched(true);
+      setBulkToastMessage(`Copied ${count} leads to Spark clipboard & marked contacted!`);
+
+      // 4. Trigger Server Action to update all IDs in PostgreSQL in a single query
+      const result = await markAllAsContacted(leadIds);
+
+      if (!result.success) {
+        throw new Error(result.message || 'Bulk update failed in PostgreSQL.');
+      }
+
+      setTimeout(() => {
+        setIsBulkDispatched(false);
+      }, 4000);
+
+      setTimeout(() => {
+        setBulkToastMessage(null);
+      }, 5000);
+    } catch (err: unknown) {
+      console.error('Bulk dispatch error:', err);
+      setBulkError((err as Error).message || 'Failed to bulk dispatch leads.');
+    } finally {
+      setIsBulkDispatching(false);
+    }
+  };
+
   const activeTabDef = STRATEGY_TABS.find((t) => t.id === activeTab)!;
 
   return (
     <div className="space-y-6">
-      {/* Toast Notification for Spark Dispatch */}
+      {/* Toast Notification for Single Lead Dispatch */}
       {lastDispatched && (
         <div className="fixed bottom-6 right-6 z-50 flex items-center gap-3 rounded-xl border border-emerald-500/40 bg-slate-900/95 px-4 py-3 shadow-2xl backdrop-blur-md animate-in slide-in-from-bottom-5">
           <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-emerald-500/20 text-emerald-400">
@@ -175,6 +285,32 @@ export default function LeadDashboard({ initialLeads, initialStats }: LeadDashbo
               <span className="font-medium text-emerald-300">{lastDispatched}</span> updated to{' '}
               <span className="text-white font-mono">contacted</span> in PostgreSQL.
             </p>
+          </div>
+        </div>
+      )}
+
+      {/* Toast Notification for Spark Bulk Dispatch */}
+      {bulkToastMessage && (
+        <div className="fixed bottom-6 right-6 z-50 flex items-center gap-3 rounded-xl border border-emerald-500/40 bg-slate-900/95 px-5 py-3.5 shadow-2xl backdrop-blur-md animate-in slide-in-from-bottom-5">
+          <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-emerald-500/20 text-emerald-400">
+            <CheckCheck className="h-5 w-5" />
+          </div>
+          <div>
+            <p className="text-xs font-semibold text-white">Spark Bulk Dossier Copied!</p>
+            <p className="text-xs text-slate-400">{bulkToastMessage}</p>
+          </div>
+        </div>
+      )}
+
+      {/* Toast Notification for Bulk Error */}
+      {bulkError && (
+        <div className="fixed bottom-6 right-6 z-50 flex items-center gap-3 rounded-xl border border-rose-500/40 bg-slate-900/95 px-5 py-3.5 shadow-2xl backdrop-blur-md animate-in slide-in-from-bottom-5">
+          <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-rose-500/20 text-rose-400">
+            <AlertCircle className="h-5 w-5" />
+          </div>
+          <div>
+            <p className="text-xs font-semibold text-rose-300">Bulk Dispatch Failed</p>
+            <p className="text-xs text-rose-400/80">{bulkError}</p>
           </div>
         </div>
       )}
@@ -232,57 +368,101 @@ export default function LeadDashboard({ initialLeads, initialStats }: LeadDashbo
         </div>
       </div>
 
-      {/* Primary Tab Navigation: The 3 Outcome-Based Strategies */}
-      <div className="rounded-2xl border border-slate-800 bg-slate-900/80 p-2 backdrop-blur-md">
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
-          {STRATEGY_TABS.map((tab) => {
-            const Icon = tab.icon;
-            const isActive = activeTab === tab.id;
-            const count = stats[tab.id];
+      {/* Primary Tab Navigation & Bulk Dispatch Action Bar */}
+      <div className="flex flex-col xl:flex-row items-stretch xl:items-center justify-between gap-3">
+        {/* Strategy Tab Selector */}
+        <div className="flex-1 rounded-2xl border border-slate-800 bg-slate-900/80 p-2 backdrop-blur-md">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
+            {STRATEGY_TABS.map((tab) => {
+              const Icon = tab.icon;
+              const isActive = activeTab === tab.id;
+              const count = stats[tab.id];
 
-            return (
-              <button
-                key={tab.id}
-                type="button"
-                onClick={() => handleTabChange(tab.id)}
-                className={`flex items-center justify-between rounded-xl border p-3.5 transition-all text-left cursor-pointer ${
-                  isActive
-                    ? tab.activeBg
-                    : 'border-slate-800/80 bg-slate-950/40 text-slate-400 hover:border-slate-700 hover:bg-slate-900/60 hover:text-slate-200'
-                }`}
-              >
-                <div className="flex items-center gap-3">
-                  <div
-                    className={`flex h-9 w-9 items-center justify-center rounded-lg ${
-                      isActive ? 'bg-white/10 text-white' : 'bg-slate-800/80 ' + tab.color
-                    }`}
-                  >
-                    <Icon className="h-4 w-4" />
-                  </div>
-                  <div>
-                    <div className="flex items-center gap-2">
-                      <span className="text-sm font-semibold tracking-tight">{tab.label}</span>
-                    </div>
-                    <p className="text-[11px] text-slate-400 line-clamp-1 mt-0.5">
-                      {tab.description}
-                    </p>
-                  </div>
-                </div>
-
-                {/* Tab Count Badge */}
-                <span
-                  className={`ml-2 inline-flex items-center rounded-full px-2.5 py-1 text-xs font-semibold shrink-0 ${
+              return (
+                <button
+                  key={tab.id}
+                  type="button"
+                  onClick={() => handleTabChange(tab.id)}
+                  className={`flex items-center justify-between rounded-xl border p-3.5 transition-all text-left cursor-pointer ${
                     isActive
-                      ? tab.badgeBg
-                      : 'bg-slate-800/80 text-slate-400 border border-slate-700/50'
+                      ? tab.activeBg
+                      : 'border-slate-800/80 bg-slate-950/40 text-slate-400 hover:border-slate-700 hover:bg-slate-900/60 hover:text-slate-200'
                   }`}
                 >
-                  {count} leads
-                </span>
-              </button>
-            );
-          })}
+                  <div className="flex items-center gap-3">
+                    <div
+                      className={`flex h-9 w-9 items-center justify-center rounded-lg ${
+                        isActive ? 'bg-white/10 text-white' : 'bg-slate-800/80 ' + tab.color
+                      }`}
+                    >
+                      <Icon className="h-4 w-4" />
+                    </div>
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <span className="text-sm font-semibold tracking-tight">{tab.label}</span>
+                      </div>
+                      <p className="text-[11px] text-slate-400 line-clamp-1 mt-0.5">
+                        {tab.description}
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* Tab Count Badge */}
+                  <span
+                    className={`ml-2 inline-flex items-center rounded-full px-2.5 py-1 text-xs font-semibold shrink-0 ${
+                      isActive
+                        ? tab.badgeBg
+                        : 'bg-slate-800/80 text-slate-400 border border-slate-700/50'
+                    }`}
+                  >
+                    {count} leads
+                  </span>
+                </button>
+              );
+            })}
+          </div>
         </div>
+
+        {/* Global Prominent "Bulk Dispatch to Spark" Button */}
+        <button
+          type="button"
+          onClick={handleBulkDispatch}
+          disabled={isBulkDispatching || filteredLeads.length === 0}
+          className={`group relative flex items-center justify-center gap-3 rounded-2xl px-6 py-4 text-sm font-bold text-white shadow-xl transition-all duration-300 cursor-pointer border shrink-0 ${
+            isBulkDispatched
+              ? 'bg-emerald-600 border-emerald-400/80 shadow-emerald-600/30'
+              : 'bg-gradient-to-r from-amber-500 via-orange-500 to-rose-600 hover:from-amber-400 hover:via-orange-400 hover:to-rose-500 border-amber-300/40 shadow-orange-500/25 hover:shadow-orange-500/40 hover:scale-[1.02] active:scale-[0.98]'
+          } disabled:opacity-40 disabled:cursor-not-allowed disabled:transform-none disabled:shadow-none`}
+        >
+          {isBulkDispatching ? (
+            <>
+              <Loader2 className="h-5 w-5 animate-spin text-white" />
+              <span>Dispatching All ({filteredLeads.length})...</span>
+            </>
+          ) : isBulkDispatched ? (
+            <>
+              <CheckCheck className="h-5 w-5 text-white animate-bounce" />
+              <span>Dispatched & Copied All!</span>
+            </>
+          ) : (
+            <>
+              <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-black/20 text-amber-200 group-hover:scale-110 transition-transform">
+                <Sparkles className="h-4 w-4 fill-amber-300 text-amber-200 animate-pulse" />
+              </div>
+              <div className="flex flex-col items-start text-left">
+                <div className="flex items-center gap-1.5">
+                  <span className="tracking-tight text-sm font-bold">
+                    Bulk Dispatch (Copy All {filteredLeads.length > 0 ? filteredLeads.length : 15})
+                  </span>
+                  <Copy className="h-3.5 w-3.5 opacity-80 group-hover:opacity-100 transition-opacity" />
+                </div>
+                <span className="text-[10px] font-normal text-amber-100/80">
+                  Format for Spark LLM & Mark Contacted
+                </span>
+              </div>
+            </>
+          )}
+        </button>
       </div>
 
       {/* Control Bar: Search, Channel Filter, and Refresh */}

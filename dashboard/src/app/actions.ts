@@ -148,7 +148,46 @@ export async function markLeadContacted(id: number): Promise<{ success: boolean;
     revalidatePath('/');
     return { success: true, id };
   } catch (error) {
-    console.error(`[DATABASE ERROR] Failed to update lead #${id}:`, error);
     return { success: false, id, message: (error as Error).message };
   }
 }
+
+/**
+ * Bulk State Mutation: Bulk Spark Dispatch Action
+ * Executes a single PostgreSQL UPDATE query that changes the status to 'contacted'
+ * for all IDs passed in the array.
+ */
+export async function markAllAsContacted(
+  leadIds: number[]
+): Promise<{ success: boolean; count: number; ids: number[]; message?: string }> {
+  if (!leadIds || leadIds.length === 0) {
+    return { success: true, count: 0, ids: [] };
+  }
+
+  try {
+    const query = `
+      UPDATE leads
+      SET status = 'contacted', updated_at = CURRENT_TIMESTAMP
+      WHERE id = ANY($1::int[])
+      RETURNING id, status;
+    `;
+
+    const result = await pool.query(query, [leadIds]);
+
+    revalidatePath('/');
+    return {
+      success: true,
+      count: result.rowCount ?? 0,
+      ids: result.rows.map((row: { id: number }) => row.id),
+    };
+  } catch (error) {
+    console.error('[DATABASE ERROR] Failed to mark leads as contacted in bulk:', error);
+    return {
+      success: false,
+      count: 0,
+      ids: [],
+      message: (error as Error).message || 'Failed to bulk update leads in PostgreSQL.',
+    };
+  }
+}
+

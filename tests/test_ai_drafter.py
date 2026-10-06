@@ -45,3 +45,9 @@ def test_llm_output_validation_rejects_drift():
     assert engine._llm_output_ok("Hi, I noticed apexdental.com shows a warning.", lead())
     assert not engine._llm_output_ok("Hi [Name], our practice provides care", lead())
     assert not engine._llm_output_ok("Dear owner, ...", lead())
+
+def test_niche_reads_naturally():
+    _, body = build_email(lead(niche="hvac", issues=["no_viewport"]), "legacy_redesign")
+    assert "looking for an HVAC company in Austin" in body
+    _, body = build_email(lead(niche="optometrist", issues=["no_booking"]), "ai_automation")
+    assert "look for an optometrist" in body

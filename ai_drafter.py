@@ -13,6 +13,29 @@ logger = logging.getLogger("leads_pipeline.ai_drafter")
 # says why it costs them customers, then makes one low-effort offer.
 # ==============================================================================
 
+# How a customer would say "looking for ___" for niches whose key isn't a natural noun
+NICHE_NOUNS = {
+    "hvac": "an HVAC company", "roofing": "a roofer", "landscaping": "a landscaper",
+    "construction": "a builder", "solar": "a solar installer", "cleaning": "a cleaning service",
+    "pest control": "a pest control company", "flooring": "a flooring company",
+    "remodeling": "a remodeling contractor", "pool service": "a pool service",
+    "physiotherapy": "a physiotherapist", "plastic surgery": "a plastic surgeon",
+    "veterinary": "a vet", "doctor": "a doctor", "clinic": "a clinic",
+    "real estate": "a real estate agent", "architecture": "an architect",
+    "insurance": "an insurance agent", "marketing agency": "a marketing agency",
+    "property management": "a property manager", "moving company": "a moving company",
+    "auto repair": "an auto repair shop", "salon": "a salon", "spa": "a spa", "gym": "a gym",
+}
+
+def _niche_phrase(niche: Optional[str]) -> str:
+    """'dentist' -> 'a dentist', 'hvac' -> 'an HVAC company'."""
+    if not niche:
+        return "a local business"
+    niche = niche.lower().strip()
+    if niche in NICHE_NOUNS:
+        return NICHE_NOUNS[niche]
+    return f"{'an' if niche[0] in 'aeiou' else 'a'} {niche}"
+
 def _site_label(url: str) -> str:
     host = urllib.parse.urlparse(url).netloc.lower()
     return host[4:] if host.startswith("www.") else host or url

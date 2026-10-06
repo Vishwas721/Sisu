@@ -19,20 +19,14 @@ IGNORE_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.gif', '.svg', '.webp', '.bmp', '
 # A footer this many years behind the current year counts as neglected
 STALE_COPYRIGHT_YEARS = 3
 
-IGNORE_DOMAINS = {'sentry.io', 'wixpress.com', 'example.com', 'domain.com', 'email.com', 'yourdomain.com'}
-
-def filter_emails(raw_emails_list):
-    clean_emails = []
-    # Block list of common frontend junk and tracking domains
-    junk_patterns = r'(sentry|wixpress|react|core-js|lodash|rspack|sentry-next|\.png|\.jpg)'
-    
-    for email in raw_emails_list:
-        email = email.lower().strip()
-        # If it doesn't match the junk pattern, keep it
-        if not re.search(junk_patterns, email):
-            clean_emails.append(email)
-            
-    return clean_emails
+# Placeholder and tracking domains that show up in page source but are never a business inbox.
+# Matched against the email's domain (and its parent domains), never as a substring of the whole address.
+IGNORE_DOMAINS = {
+    'sentry.io', 'sentry-next.wixpress.com', 'wixpress.com', 'example.com', 'domain.com', 'email.com',
+    'yourdomain.com', 'yoursite.com', 'company.com', 'mysite.com', 'website.com', 'test.com',
+    'godaddy.com', 'squarespace.com', 'wix.com', 'sentry.wixpress.com',
+}
+IGNORE_LOCAL_PARTS = {'your', 'yourname', 'name', 'email', 'user', 'username', 'john', 'johndoe', 'jane', 'example'}
 
 class WebExtractor:
     SCHEDULING_SIGNATURES = [
@@ -56,16 +50,21 @@ class WebExtractor:
             pass
 
     def _clean_email(self, email_str: str) -> Optional[str]:
-        email_str = email_str.strip().lower()
+        email_str = urllib.parse.unquote(email_str).strip().lower().strip(".")
         if any(email_str.endswith(ext) for ext in IGNORE_EXTENSIONS):
             return None
         parts = email_str.split('@')
         if len(parts) != 2:
             return None
-        domain = parts[1]
-        if domain in IGNORE_DOMAINS:
+        local, domain = parts
+        if len(local) < 2 or local in IGNORE_LOCAL_PARTS:
             return None
-        if len(parts[0]) < 2 or len(domain) < 3:
+        # Retina asset names like "logo@2x.png" and npm specifiers like "core-js@3.2.1"
+        tld = domain.rsplit(".", 1)[-1]
+        if "." not in domain or not tld.isalpha() or len(tld) < 2:
+            return None
+        labels = domain.split(".")
+        if any(".".join(labels[i:]) in IGNORE_DOMAINS for i in range(len(labels) - 1)):
             return None
         return email_str
 
@@ -177,8 +176,6 @@ class WebExtractor:
             if cleaned:
                 emails.add(cleaned)
 
-        clean_emails = filter_emails(list(emails))
-
         # 2. Instagram & LinkedIn
         instagram_url = None
         linkedin_url = None
@@ -223,7 +220,7 @@ class WebExtractor:
         all_flaws = strategy_flaws + general_flaws
 
         return {
-            "emails": clean_emails,
+            "emails": sorted(emails),
             "instagram_url": instagram_url,
             "linkedin_url": linkedin_url,
             "title": title,

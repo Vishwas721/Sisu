@@ -1,9 +1,0 @@
-{
-  "last_city": "New York",
-  "last_city_index": 0,
-  "next_city": "New York",
-  "next_city_index": 0,
-  "city_exhausted": false,
-  "successful_insertions_last_run": 15,
-  "updated_at": "2026-09-10T07:21:10.244193+00:00"
-}

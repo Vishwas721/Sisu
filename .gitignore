@@ -49,3 +49,6 @@ Thumbs.db
 # Local databases
 *.sqlite3
 *.db
+# Local pipeline run state
+pipeline_state.json
+last_city.json

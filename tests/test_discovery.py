@@ -69,3 +69,8 @@ def test_geocode_raises_for_unknown_place():
     with mock.patch("discovery.requests.get", return_value=response):
         with pytest.raises(ValueError):
             discovery.resolve_bbox("Nowhere At All 123")
+
+def test_unknown_niche_searches_common_osm_keys():
+    query = build_overpass_query("Austin", "tattoo studio")
+    for key in ("amenity", "shop", "craft", "office", "healthcare"):
+        assert f'"{key}"="tattoo_studio"' in query

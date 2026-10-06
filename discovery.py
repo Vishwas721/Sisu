@@ -149,7 +149,10 @@ def build_overpass_query(city: str, niche: str, bbox: Optional[str] = None) -> s
     contact:instagram, OR contact:facebook tag.
     """
     niche_lower = niche.lower().strip()
-    tag_pairs = NICHE_TAG_MAPPINGS.get(niche_lower, [('amenity', niche_lower)])
+    # Typed niches outside the mapping ("tattoo", "bakery") are tried across the usual OSM keys
+    slug = niche_lower.replace(" ", "_")
+    fallback = [(key, slug) for key in ("amenity", "shop", "craft", "office", "healthcare")]
+    tag_pairs = NICHE_TAG_MAPPINGS.get(niche_lower, fallback)
     bbox = resolve_bbox(city, bbox)
 
     filters = []

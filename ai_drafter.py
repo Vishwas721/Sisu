@@ -6,99 +6,33 @@ from config import config
 
 logger = logging.getLogger("leads_pipeline.ai_drafter")
 
-# Verbatim negative constraint required across all strategy prompts
-CRITICAL_NEGATIVE_CONSTRAINT = (
-    "YOU ARE NOT THE BUSINESS. NEVER pretend to be the dentist/company. "
-    "NEVER use first-person pronouns like 'Our practice' or 'We provide' when referring to their services. "
-    "You are an external tech consultant writing an email TO them."
-)
-
-def get_prompt_for_strategy(strategy: str, lead_info: Dict[str, Any], site_summary: str) -> str:
+def get_prompt_for_strategy(strategy: str, lead_info: Dict[str, Any], site_summary: str = "") -> str:
     """
-    Router function selecting one of three distinct, hardened prompts based on campaign_strategy:
-    - no_website: Pitches dedicated booking page to capture lost Google search traffic.
-    - legacy_redesign: References specific technical neglect (outdated copyright, mobile layout).
-    - ai_automation: Compliments modern site, points out manual form friction, pitches 24/7 AI booking.
+    Generate cold email outreach prompt for the LLM using the casual 4-sentence template.
     """
     business_name = lead_info.get("business_name", "your business")
-    niche = lead_info.get("niche", "local business")
-    city = lead_info.get("city", "your area")
-    website_url = lead_info.get("website_url", "")
-    flaws = lead_info.get("technical_flaws", [])
-    flaws_text = ", ".join(flaws) if flaws else "unoptimized mobile layout and slow asset loading"
 
-    social_channel = lead_info.get("instagram_url") or lead_info.get("facebook_url") or "Instagram/Facebook"
+    prompt = f"""
+You are an expert cold email copywriter. Write a highly casual, short, 4-sentence email to {business_name}. 
 
-    if strategy == "no_website":
-        return f"""You are an external tech and web development consultant writing a cold email to the owner of {business_name} in {city}.
+CRITICAL RULES:
+1. Speak at a 5th-grade reading level. Use short, simple words.
+2. DO NOT use formal corporate speak (e.g., "excellence", "reputation", "innovative").
+3. You must follow the exact structure of the template below. 
 
-CRITICAL NEGATIVE CONSTRAINTS:
-{CRITICAL_NEGATIVE_CONSTRAINT}
+Use this exact template, but adapt the [bracketed] parts to fit their business:
 
-Context:
-- Business: {business_name} ({niche})
-- Location: {city}
-- Status: The business has an active social media presence ({social_channel}), but NO dedicated business website or online booking page.
+Template:
+Hi,
+I came across [Business Name] and noticed there’s an opportunity to [insert the specific fix: e.g., give the website a much more modern look / set up a proper website / streamline your booking process].
+I build custom solutions for businesses like yours, with a focus on making them look credible, work better on mobile, and turn more visitors into customers.
+If you’re open to seeing what I could do, just reply “interested” and I’ll send you a quick concept.
+If not, no worries — you can ignore this email.
 
-Instructions:
-Write a strict 3-sentence personalized cold outreach email:
-Sentence 1: Compliment their active social media presence and community engagement.
-Sentence 2: Explain that without a dedicated website, they are losing high-intent local clients who search directly on Google.
-Sentence 3: Pitch the development of a dedicated online booking and credibility page to capture lost Google search traffic.
-
-Strict Rules:
-- Exactly 3 sentences.
-- Professional, concise, consultative tone.
-- Do NOT include subject lines, preamble, placeholders, or quotes. Output ONLY the 3 sentences."""
-
-    elif strategy == "ai_automation":
-        return f"""You are an external AI and automation consultant writing a cold email to the owner of {business_name} in {city}.
-
-CRITICAL NEGATIVE CONSTRAINTS:
-{CRITICAL_NEGATIVE_CONSTRAINT}
-
-Context:
-- Business: {business_name} ({niche})
-- Location: {city}
-- Website: {website_url}
-- Site Summary: {site_summary[:400] if site_summary else 'Modern business website'}
-- Observation: The website is modern and professional, but relies on static manual contact forms for lead capture rather than an automated scheduling integration.
-
-Instructions:
-Write a strict 3-sentence personalized cold outreach email:
-Sentence 1: Compliment their modern, professional website and online presentation.
-Sentence 2: Point out that static manual contact forms cause friction and delayed response times, causing potential clients to look elsewhere.
-Sentence 3: Pitch a lightweight AI receptionist and automated scheduling integration to book clients 24/7 without manual staff overhead.
-
-Strict Rules:
-- Exactly 3 sentences.
-- Professional, concise, consultative tone.
-- Do NOT include subject lines, preamble, placeholders, or quotes. Output ONLY the 3 sentences."""
-
-    else:
-        # Default strategy: legacy_redesign
-        return f"""You are an external tech and web development consultant writing a cold email to the owner of {business_name} in {city}.
-
-CRITICAL NEGATIVE CONSTRAINTS:
-{CRITICAL_NEGATIVE_CONSTRAINT}
-
-Context:
-- Business: {business_name} ({niche})
-- Location: {city}
-- Website: {website_url}
-- Specific technical neglect identified: {flaws_text}
-- Site Summary: {site_summary[:400] if site_summary else 'Local business website'}
-
-Instructions:
-Write a strict 3-sentence personalized cold outreach email:
-Sentence 1: Compliment their business and reputation in {city}.
-Sentence 2: Reference the specific technical neglect found on their website ({flaws_text}) and explain how it damages mobile user experience and search ranking.
-Sentence 3: Pitch a modern website redesign to turn visitors into confirmed clients.
-
-Strict Rules:
-- Exactly 3 sentences.
-- Professional, concise, consultative tone.
-- Do NOT include subject lines, preamble, placeholders, or quotes. Output ONLY the 3 sentences."""
+Best,
+Vishwas
+"""
+    return prompt
 
 class AIDraftingEngine:
     def __init__(self, base_url: Optional[str] = None, model: Optional[str] = None):
@@ -106,12 +40,11 @@ class AIDraftingEngine:
         self.model = model or config.OLLAMA_MODEL
 
     def _clean_response(self, text: str) -> str:
-        """Strip conversational filler, quotes, and markdown formatting."""
+        """Strip conversational preamble and outer quotes while preserving template structure."""
         text = text.strip()
         prefixes = [
-            r"^(here is|here's)\s+(a|the|your)?\s*(outreach|message|cold outreach|email).*?:",
+            r"^(here is|here's)\s+(a|the|your)?\s*(outreach|message|cold outreach|email).*?:\s*",
             r"^(subject|re):.*?\n+",
-            r"^dear.*?\n+",
         ]
         for p in prefixes:
             text = re.sub(p, "", text, flags=re.IGNORECASE).strip()
@@ -128,17 +61,12 @@ class AIDraftingEngine:
         strategy: Optional[str] = None
     ) -> str:
         """
-        Route to strategy-specific prompt, send to local Ollama instance,
-        and return strict 3-sentence personalized cold email.
+        Generate casual 4-sentence cold outreach email via Ollama.
         """
         campaign_strategy = strategy or lead_info.get("campaign_strategy") or "legacy_redesign"
         prompt = get_prompt_for_strategy(campaign_strategy, lead_info, site_summary)
 
         business_name = lead_info.get("business_name", "your business")
-        niche = lead_info.get("niche", "local business")
-        city = lead_info.get("city", "your area")
-        flaws = lead_info.get("technical_flaws", [])
-        flaws_text = ", ".join(flaws) if flaws else "unoptimized mobile layout and slow asset loading"
 
         payload = {
             "model": self.model,
@@ -147,12 +75,12 @@ class AIDraftingEngine:
             "options": {
                 "temperature": 0.5,
                 "top_p": 0.9,
-                "num_predict": 180
+                "num_predict": 250
             }
         }
 
         endpoint = f"{self.base_url}/api/generate"
-        logger.info(f"Generating AI outreach draft for strategy='{campaign_strategy}' via Ollama ({self.model})...")
+        logger.info(f"Generating AI outreach draft for '{business_name}' via Ollama ({self.model})...")
 
         try:
             async with aiohttp.ClientSession() as session:
@@ -161,33 +89,40 @@ class AIDraftingEngine:
                         data = await resp.json()
                         raw_output = data.get("response", "").strip()
                         cleaned = self._clean_response(raw_output)
-                        logger.info(f"Successfully generated outreach message for strategy '{campaign_strategy}'.")
+                        logger.info(f"Successfully generated outreach message for '{business_name}'.")
                         return cleaned
                     else:
                         error_text = await resp.text()
                         logger.error(f"Ollama API returned HTTP {resp.status}: {error_text}")
-                        return self._fallback_message(campaign_strategy, business_name, niche, city, flaws_text)
+                        return self._fallback_message(campaign_strategy, business_name)
         except Exception as e:
             logger.error(f"Failed to communicate with Ollama at {endpoint}: {e}")
-            return self._fallback_message(campaign_strategy, business_name, niche, city, flaws_text)
+            return self._fallback_message(campaign_strategy, business_name)
 
-    def _fallback_message(self, strategy: str, business_name: str, niche: str, city: str, flaws: str) -> str:
-        """Strategy-specific deterministic fallback if Ollama is unreachable."""
+    def _fallback_message(self, strategy: str, business_name: str) -> str:
+        """Template-aligned deterministic fallback if Ollama is unreachable."""
         if strategy == "no_website":
-            return (
-                f"I came across {business_name}'s social profile in {city} and was impressed by your strong community presence. "
-                f"However, without a dedicated business website, you are likely missing out on patients searching directly on Google. "
-                f"Would you be open to a quick 3-minute video showing how a streamlined booking and credibility page could capture that lost search traffic?"
-            )
+            fix = "set up a proper website"
         elif strategy == "ai_automation":
-            return (
-                f"I visited {business_name}'s website in {city} and was impressed by your clean, modern layout. "
-                f"However, relying on manual contact forms often causes delays that lead prospective patients to book elsewhere. "
-                f"Would you be open to a quick 3-minute video showing how a 24/7 AI scheduling assistant can automate your bookings directly?"
-            )
+            fix = "streamline your booking process"
         else:
-            return (
-                f"I was reviewing {business_name}'s website in {city} and love the high-quality {niche} services you offer. "
-                f"However, I noticed {flaws}, which hurts your search ranking and mobile patient experience. "
-                f"Would you be open to a quick 3-minute video showing how a modern redesign can double your online conversions?"
-            )
+            fix = "give the website a much more modern look"
+
+        return (
+            f"Hi,\n"
+            f"I came across {business_name} and noticed there’s an opportunity to {fix}.\n"
+            f"I build custom solutions for businesses like yours, with a focus on making them look credible, work better on mobile, and turn more visitors into customers.\n"
+            f"If you’re open to seeing what I could do, just reply “interested” and I’ll send you a quick concept.\n"
+            f"If not, no worries — you can ignore this email.\n\n"
+            f"Best,\n"
+            f"Vishwas"
+        )
+
+if __name__ == "__main__":
+    import asyncio
+    engine = AIDraftingEngine()
+    test_lead = {"business_name": "Apex Dental", "campaign_strategy": "legacy_redesign"}
+    print("--- PROMPT ---")
+    print(get_prompt_for_strategy("legacy_redesign", test_lead))
+    print("\n--- FALLBACK MESSAGE ---")
+    print(engine._fallback_message("legacy_redesign", "Apex Dental"))

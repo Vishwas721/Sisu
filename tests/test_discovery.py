@@ -5,6 +5,12 @@ import pytest
 import discovery
 from discovery import make_dedupe_key, build_overpass_query
 
+@pytest.fixture(autouse=True)
+def isolated_geocoding(tmp_path, monkeypatch):
+    # Never touch the real cache file or wait on the real rate limit in tests
+    monkeypatch.setattr(discovery, "GEOCODE_CACHE_FILE", tmp_path / "geocode_cache.json")
+    monkeypatch.setattr(discovery, "NOMINATIM_MIN_INTERVAL", 0)
+
 @pytest.mark.parametrize("url,key", [
     ("http://www.Smile.com/", "smile.com"),
     ("https://smile.com/locations/austin", "smile.com"),
@@ -74,3 +80,26 @@ def test_unknown_niche_searches_common_osm_keys():
     query = build_overpass_query("Austin", "tattoo studio")
     for key in ("amenity", "shop", "craft", "office", "healthcare"):
         assert f'"{key}"="tattoo_studio"' in query
+
+def test_geocode_results_are_cached_between_runs():
+    response = mock.Mock()
+    response.json.return_value = [{"boundingbox": ["1", "2", "3", "4"], "display_name": "X"}]
+    with mock.patch("discovery.requests.get", return_value=response) as get:
+        first = discovery.geocode_city("Cache Town")
+        second = discovery.geocode_city("cache town")
+    assert first == second == "1.0,3.0,2.0,4.0"
+    assert get.call_count == 1
+
+def test_nominatim_calls_are_spaced_out(monkeypatch):
+    monkeypatch.setattr(discovery, "NOMINATIM_MIN_INTERVAL", 0.3)
+    response = mock.Mock()
+    response.json.return_value = []
+    times = []
+    def fake_get(*args, **kwargs):
+        times.append(discovery.time.monotonic())
+        return response
+    with mock.patch("discovery.requests.get", side_effect=fake_get):
+        with pytest.raises(ValueError):
+            discovery.geocode_city("Nowhere Spaced")
+    assert len(times) == 2
+    assert times[1] - times[0] >= 0.29

@@ -55,3 +55,4 @@ last_city.json
 
 # Pipeline run logs written by the dashboard
 logs/
+geocode_cache.json

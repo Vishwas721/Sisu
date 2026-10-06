@@ -1,5 +1,9 @@
+import json
 import logging
+import threading
+import time
 import urllib.parse
+from pathlib import Path
 from typing import List, Dict, Any, Optional, Set
 import requests
 
@@ -96,7 +100,43 @@ def make_dedupe_key(url: str) -> str:
     return host
 
 NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
-_geocode_cache: Dict[str, str] = {}
+# Nominatim usage policy: at most one request per second
+NOMINATIM_MIN_INTERVAL = 1.1
+# Looked-up cities are remembered across runs so each city is geocoded once
+GEOCODE_CACHE_FILE = Path(__file__).parent / "geocode_cache.json"
+_nominatim_lock = threading.Lock()
+_last_nominatim_call = 0.0
+
+def _load_geocode_cache() -> Dict[str, str]:
+    try:
+        return json.loads(GEOCODE_CACHE_FILE.read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+def _save_geocode_cache(cache: Dict[str, str]) -> None:
+    try:
+        GEOCODE_CACHE_FILE.write_text(json.dumps(cache, indent=2, sort_keys=True), encoding="utf-8")
+    except OSError as e:
+        logger.warning(f"Could not save geocode cache: {e}")
+
+def _nominatim_get(params: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """GET Nominatim, never more than once per NOMINATIM_MIN_INTERVAL seconds."""
+    global _last_nominatim_call
+    with _nominatim_lock:
+        wait = _last_nominatim_call + NOMINATIM_MIN_INTERVAL - time.monotonic()
+        if wait > 0:
+            time.sleep(wait)
+        try:
+            response = requests.get(
+                NOMINATIM_URL,
+                params=params,
+                headers={"User-Agent": "SisuLeadPipeline/1.0 (+https://github.com/Vishwas721/Sisu)"},
+                timeout=20,
+            )
+        finally:
+            _last_nominatim_call = time.monotonic()
+    response.raise_for_status()
+    return response.json()
 
 def geocode_city(city: str) -> str:
     """
@@ -105,20 +145,13 @@ def geocode_city(city: str) -> str:
     Raises ValueError if nothing matches.
     """
     key = city.lower().strip()
-    if key in _geocode_cache:
-        return _geocode_cache[key]
+    cache = _load_geocode_cache()
+    if key in cache:
+        return cache[key]
 
-    headers = {"User-Agent": "SisuLeadPipeline/1.0 (+https://github.com/Vishwas721/Sisu)"}
     results: List[Dict[str, Any]] = []
     for params in ({"featureType": "settlement"}, {}):
-        response = requests.get(
-            NOMINATIM_URL,
-            params={"q": city, "format": "jsonv2", "limit": 1, **params},
-            headers=headers,
-            timeout=20,
-        )
-        response.raise_for_status()
-        results = response.json()
+        results = _nominatim_get({"q": city, "format": "jsonv2", "limit": 1, **params})
         if results:
             break
     if not results:
@@ -130,7 +163,8 @@ def geocode_city(city: str) -> str:
         logger.warning(f"'{city}' resolved to a very large area ({results[0].get('display_name')}); discovery may be slow")
     bbox = f"{south},{west},{north},{east}"
     logger.info(f"Geocoded '{city}' -> {results[0].get('display_name')} [{bbox}]")
-    _geocode_cache[key] = bbox
+    cache[key] = bbox
+    _save_geocode_cache(cache)
     return bbox
 
 def resolve_bbox(city: str, bbox: Optional[str] = None) -> str:

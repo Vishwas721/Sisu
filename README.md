@@ -121,6 +121,19 @@ The dashboard has no login and can start scraping runs, so keep it bound to 127.
 
 ---
 
+## 🐢 Pacing and daily cap
+
+The scraper is deliberately slow and polite:
+
+- Each business website is visited once (homepage, plus the contact page if needed, 1-3 s later). Up to 4 different sites are open at a time, started a moment apart.
+- 2-5 s random pause between batches of sites, 5-12 s between city/niche searches.
+- Nominatim (city lookup) is limited to 1 request per second, as its usage policy requires, and looked-up cities are cached in `geocode_cache.json`.
+- **`DAILY_LEAD_CAP`** in `.env` (default 30, `0` = off) caps new leads saved per day across all runs, whether started from the dashboard or the command line. A run that would go over is shrunk to what's left, and the dashboard shows "Today: X / 30".
+
+Match the cap to what you can actually email: start around 10-20 a day on a new sending domain.
+
+---
+
 ## ⚖️ Sending responsibly
 
 - Send from a separate, warmed-up domain, a few dozen emails a day at first.

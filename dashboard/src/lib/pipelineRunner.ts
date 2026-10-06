@@ -25,6 +25,9 @@ export interface RunStatus {
   inserted: number;
   currentTarget: { city: string; niche: string } | null;
   completed: boolean;
+  stoppedByUser: boolean;
+  // Last lines of a crash (Python traceback), shown when the process exits with an error
+  errorLines: string[];
   logLines: string[];
 }
 
@@ -32,10 +35,10 @@ interface RunnerState {
   child: ChildProcess | null;
   status: RunStatus;
   lines: string[];
+  rawTail: string[];
 }
 
 declare global {
-  // eslint-disable-next-line no-var
   var __pipelineRunner: RunnerState | undefined;
 }
 
@@ -45,6 +48,7 @@ const state: RunnerState =
   (global.__pipelineRunner = {
     child: null,
     lines: [],
+    rawTail: [],
     status: {
       running: false,
       request: null,
@@ -54,9 +58,14 @@ const state: RunnerState =
       inserted: 0,
       currentTarget: null,
       completed: false,
+      stoppedByUser: false,
+      errorLines: [],
       logLines: [],
     },
   });
+
+// State kept from before a hot reload may predate newer fields
+state.rawTail ??= [];
 
 function pythonBinary(): string {
   if (process.env.PYTHON_BIN) return process.env.PYTHON_BIN;
@@ -91,6 +100,9 @@ function handleLine(raw: string) {
   if (parsed) {
     state.lines.push(`${parsed[1]} ${parsed[2] === 'INFO' ? '' : parsed[2] + ' '}${parsed[3]}`);
     if (state.lines.length > MAX_LINES) state.lines.splice(0, state.lines.length - MAX_LINES);
+  } else {
+    state.rawTail.push(line);
+    if (state.rawTail.length > 8) state.rawTail.shift();
   }
 }
 
@@ -115,6 +127,7 @@ export function startRun(request: RunRequest): RunStatus {
 
   state.child = child;
   state.lines = [];
+  state.rawTail = [];
   state.status = {
     running: true,
     request,
@@ -124,6 +137,8 @@ export function startRun(request: RunRequest): RunStatus {
     inserted: 0,
     currentTarget: null,
     completed: false,
+    stoppedByUser: false,
+    errorLines: [],
     logLines: [],
   };
 
@@ -145,6 +160,7 @@ export function startRun(request: RunRequest): RunStatus {
     state.child = null;
     state.status.running = false;
     state.status.exitCode = code;
+    if (code !== 0 && !state.status.stoppedByUser) state.status.errorLines = [...state.rawTail];
     state.status.finishedAt = new Date().toISOString();
   };
   child.on('exit', finish);
@@ -159,6 +175,7 @@ export function startRun(request: RunRequest): RunStatus {
 export function stopRun(): void {
   const child = state.child;
   if (!child?.pid) return;
+  state.status.stoppedByUser = true;
   if (process.platform === 'win32') {
     // Kill the whole tree so Playwright's Chromium processes go too
     spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], { windowsHide: true });

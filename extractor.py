@@ -43,6 +43,14 @@ class WebExtractor:
         self.timeout_ms = config.PAGE_TIMEOUT_MS if timeout_ms is None else timeout_ms
         self.stealth = Stealth()
 
+    async def _wait_for_render(self, page: Page, timeout_ms: int = 8000) -> None:
+        """Give JS-rendered sites (Wix, Squarespace, React) time to populate the DOM."""
+        try:
+            await page.wait_for_load_state("networkidle", timeout=timeout_ms)
+        except Exception:
+            # Sites with long-polling or chat widgets never go idle; use what has rendered so far
+            pass
+
     def _clean_email(self, email_str: str) -> Optional[str]:
         email_str = email_str.strip().lower()
         if any(email_str.endswith(ext) for ext in IGNORE_EXTENSIONS):
@@ -298,6 +306,8 @@ class WebExtractor:
                 if load_time > 5.0:
                     result["technical_flaws"].append(f"Slow initial page load time ({load_time}s)")
 
+                await self._wait_for_render(page)
+
                 # Extract page data and evaluate strategy
                 page_data = await self._extract_from_page(page, target_url)
                 result["emails"] = page_data["emails"]
@@ -316,6 +326,7 @@ class WebExtractor:
                                 full_contact_url = urllib.parse.urljoin(target_url, contact_href)
                                 logger.info(f"Visiting contact page for {business_name}: {full_contact_url}")
                                 await page.goto(full_contact_url, wait_until="domcontentloaded", timeout=15000)
+                                await self._wait_for_render(page)
                                 contact_data = await self._extract_from_page(page, full_contact_url)
                                 for em in contact_data["emails"]:
                                     if em not in result["emails"]:

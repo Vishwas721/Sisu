@@ -42,6 +42,8 @@ async def test_full_flow():
     extractor = WebExtractor()
     sample_url = "https://example.com"
     scraped = await extractor.scrape_lead(sample_url, business_name="Example Practice")
+    await extractor.close()
+    assert scraped["scrape_status"] == "success", f"Scrape failed: {scraped['raw_summary']}"
     logger.info(f"-> Scraped data from {sample_url}:")
     logger.info(f"   Status: {scraped['scrape_status']}")
     logger.info(f"   Load Time: {scraped['load_time_sec']}s")

@@ -28,6 +28,14 @@ IGNORE_DOMAINS = {
 }
 IGNORE_LOCAL_PARTS = {'your', 'yourname', 'name', 'email', 'user', 'username', 'john', 'johndoe', 'jane', 'example'}
 
+def decode_cfemail(encoded: str) -> Optional[str]:
+    """Decode a Cloudflare email-protection hex string (first byte is the XOR key)."""
+    try:
+        key = int(encoded[:2], 16)
+        return "".join(chr(int(encoded[i:i + 2], 16) ^ key) for i in range(2, len(encoded), 2))
+    except (ValueError, IndexError):
+        return None
+
 class WebExtractor:
     SCHEDULING_SIGNATURES = [
         "calendly.com", "acuityscheduling.com", "zocdoc.com", "nexhealth.com",
@@ -173,6 +181,18 @@ class WebExtractor:
         text_matches = EMAIL_REGEX.findall(html_content)
         for m in text_matches:
             cleaned = self._clean_email(m)
+            if cleaned:
+                emails.add(cleaned)
+
+        # Cloudflare hides emails as hex in data-cfemail or /cdn-cgi/l/email-protection#<hex>
+        cf_encoded = [el["data-cfemail"] for el in soup.find_all(attrs={"data-cfemail": True})]
+        cf_encoded += [
+            a["href"].split("#", 1)[1] for a in soup.find_all("a", href=True)
+            if "/cdn-cgi/l/email-protection#" in a["href"]
+        ]
+        for encoded in cf_encoded:
+            decoded = decode_cfemail(encoded)
+            cleaned = self._clean_email(decoded) if decoded else None
             if cleaned:
                 emails.add(cleaned)
 

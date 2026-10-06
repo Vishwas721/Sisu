@@ -265,11 +265,15 @@ async def process_single_lead(
         "facebook_url": facebook_url,
         "linkedin_url": linkedin_url,
         "campaign_strategy": strategy,
-        "technical_flaws": scraped_data.get("technical_flaws", [])
+        "technical_flaws": scraped_data.get("technical_flaws", []),
+        "issues": scraped_data.get("issues", []),
+        "load_time_sec": scraped_data.get("load_time_sec"),
+        "rating": lead.get("rating"),
+        "review_count": lead.get("review_count"),
     }
 
-    # 3. AI Drafting Engine via local Ollama
-    logger.info(f"[AI DRAFTING] Requesting 3-sentence outreach draft for niche='{lead_context['niche']}', strategy='{strategy}'...")
+    # 3. Personalized outreach draft built from the issues found on the site
+    logger.info(f"[DRAFTING] Outreach draft for niche='{lead_context['niche']}', strategy='{strategy}'...")
     ai_message = await ai_engine.generate_outreach_message(
         lead_info=lead_context,
         site_summary=scraped_data.get("raw_summary", ""),

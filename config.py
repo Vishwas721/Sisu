@@ -18,6 +18,12 @@ class Config:
     # Ollama settings
     OLLAMA_BASE_URL: str = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434")
     OLLAMA_MODEL: str = os.getenv("OLLAMA_MODEL", "llama3.2:1b")
+    # Off by default: the personalized templates are reliable; small local models drift
+    USE_LLM_DRAFTS: bool = os.getenv("USE_LLM_DRAFTS", "false").lower() in ("true", "1", "yes")
+
+    # Outreach sender details (address is required in commercial email under CAN-SPAM)
+    SENDER_NAME: str = os.getenv("SENDER_NAME", "Vishwas")
+    SENDER_ADDRESS: str = os.getenv("SENDER_ADDRESS", "")
 
     # Discovery settings (optional: without a key only OpenStreetMap is used)
     GOOGLE_PLACES_API_KEY: str = os.getenv("GOOGLE_PLACES_API_KEY", "")

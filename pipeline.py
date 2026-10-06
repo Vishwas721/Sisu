@@ -12,6 +12,7 @@ from database import Database
 from discovery import discover_leads, make_dedupe_key
 from extractor import WebExtractor
 from ai_drafter import AIDraftingEngine
+from email_validation import filter_deliverable
 
 # ==============================================================================
 # Pipeline Configuration & Constants
@@ -243,7 +244,7 @@ async def process_single_lead(
         return await disqualify(f"Modern site with little to fix (score {scraped_data.get('lead_score')})")
 
     # Merge any emails already discovered from OSM with scraped emails
-    all_emails = sorted(set(lead.get("initial_emails", []) + scraped_data.get("emails", [])))
+    all_emails = await filter_deliverable(sorted(set(lead.get("initial_emails", []) + scraped_data.get("emails", []))))
     instagram_url = scraped_data.get("instagram_url") or lead.get("instagram_url")
     linkedin_url = scraped_data.get("linkedin_url") or lead.get("linkedin_url")
     facebook_url = lead.get("facebook_url")

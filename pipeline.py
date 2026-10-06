@@ -2,6 +2,7 @@ import asyncio
 import argparse
 import json
 import logging
+import random
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -20,6 +21,8 @@ from email_validation import filter_deliverable
 DAILY_QUOTA = 15
 # Pages scraped in parallel on the shared browser
 SCRAPE_CONCURRENCY = 4
+# Random mode gives up after trying this many city/niche pairs
+RANDOM_MAX_TARGETS = 25
 STATE_FILE = Path(__file__).parent / "pipeline_state.json"
 LEGACY_STATE_FILE = Path(__file__).parent / "last_city.json"
 
@@ -395,6 +398,17 @@ async def process_target(
     # Unprocessed candidates remain if the quota was hit mid-list; resume here next run
     return inserted, processed >= len(leads_to_process)
 
+async def _finish_run(db: Database, inserted: int, quota: int) -> None:
+    """Summary report. The [RUN COMPLETE] line is parsed by the dashboard."""
+    logger.info("==================================================================")
+    logger.info("Execution Finished. Recent leads in PostgreSQL database:")
+    for r in await db.get_recent_leads(limit=5):
+        logger.info(
+            f"  [ID: {r['id']}] {r['business_name']} | City: {r['city']} | Niche: {r.get('niche')} | "
+            f"Strategy: {r.get('campaign_strategy')} | Status: {r['status']} | URL: {r['website_url']}"
+        )
+    logger.info(f"[RUN COMPLETE] inserted={inserted} quota={quota}")
+
 # ==============================================================================
 # Main Orchestrator with Dual City & Niche Rotation
 # ==============================================================================
@@ -404,11 +418,14 @@ async def run_pipeline(
     niche_override: Optional[str] = None,
     test_url: Optional[str] = None,
     force_next: bool = False,
-    reset_state: bool = False
+    reset_state: bool = False,
+    mode: str = "rotation"
 ):
     """
-    Main autonomous orchestrator featuring nested dual rotation across
-    TARGET_CITIES and TARGET_NICHES, daily quota enforcement, and local state memory.
+    Main orchestrator. Modes:
+    - rotation: walk TARGET_CITIES x TARGET_NICHES in order, remembering position between runs.
+    - target: only the given city + niche (any city name; unknown ones are geocoded).
+    - random: random city/niche pairs until the quota is met. A given city or niche stays fixed.
     """
     logger.info("==================================================================")
     logger.info("Autonomous Dual City & Niche Lead Acquisition Pipeline Starting")
@@ -442,6 +459,38 @@ async def run_pipeline(
             }
             res = await process_single_lead(test_lead, db, extractor, ai_engine)
             logger.info(f"Test run completed: {res}")
+            return
+
+        if mode == "target":
+            if not (city_override and niche_override):
+                raise ValueError("--mode target needs both --city and --niche")
+            inserted, _ = await process_target(
+                city_override, niche_override, 0, daily_quota, db, extractor, ai_engine,
+                bbox=TARGET_CITIES.get(city_override)
+            )
+            await _finish_run(db, inserted, daily_quota)
+            return
+
+        if mode == "random":
+            inserted = 0
+            tried = set()
+            for _ in range(RANDOM_MAX_TARGETS):
+                if inserted >= daily_quota:
+                    break
+                city = city_override or random.choice(city_names)
+                niche = niche_override or random.choice(niche_names)
+                if (city, niche) in tried:
+                    if city_override and niche_override:
+                        break
+                    continue
+                tried.add((city, niche))
+                logger.info(f"[RANDOM] Picked '{niche}' in '{city}'")
+                gained, _ = await process_target(
+                    city, niche, inserted, daily_quota, db, extractor, ai_engine,
+                    bbox=TARGET_CITIES.get(city)
+                )
+                inserted += gained
+            await _finish_run(db, inserted, daily_quota)
             return
 
         # Handle state reset
@@ -553,19 +602,7 @@ async def run_pipeline(
                 f"Total inserted: {successful_insertions}/{daily_quota}."
             )
 
-        # Step 3: Summary Report
-        logger.info("==================================================================")
-        logger.info("Execution Finished. Recent leads in PostgreSQL database:")
-        recent = await db.get_recent_leads(limit=5)
-        for r in recent:
-            logger.info(
-                f"  [ID: {r['id']}] {r['business_name']} | City: {r['city']} | Niche: {r.get('niche')} | "
-                f"Strategy: {r.get('campaign_strategy')} | URL: {r['website_url']}"
-            )
-            logger.info(f"    Emails: {r['emails']}")
-            logger.info(f"    Socials: IG={r['instagram_url']}, LI={r['linkedin_url']}")
-            logger.info(f"    Status: {r['status']}")
-            logger.info("  " + "-"*50)
+        await _finish_run(db, successful_insertions, daily_quota)
 
     finally:
         await extractor.close()
@@ -577,8 +614,11 @@ async def run_pipeline(
 def parse_args():
     parser = argparse.ArgumentParser(description="Autonomous Lead Extraction Pipeline with Dual City & Niche Rotation")
     parser.add_argument("--quota", type=int, default=DAILY_QUOTA, help=f"Daily insertion quota (default: {DAILY_QUOTA})")
-    parser.add_argument("--city", type=str, default=None, help="City override to start rotation with")
-    parser.add_argument("--niche", type=str, default=None, help="Niche override to start rotation with")
+    parser.add_argument("--mode", choices=["rotation", "target", "random"], default="rotation",
+                        help="rotation: walk the city/niche lists in order; target: only --city + --niche; "
+                             "random: random pairs until the quota is met (a given --city or --niche stays fixed)")
+    parser.add_argument("--city", type=str, default=None, help="City (any name; unknown cities are geocoded). In rotation mode, where to start")
+    parser.add_argument("--niche", type=str, default=None, help="Niche (any business type). In rotation mode, where to start")
     parser.add_argument("--test-url", type=str, default=None, help="Direct test URL to scrape without Overpass discovery")
     parser.add_argument("--force-next", action="store_true", help="Force advancing to next target in rotation regardless of previous state")
     parser.add_argument("--reset-state", action="store_true", help="Reset local rotation memory and start from index (0, 0)")
@@ -596,5 +636,6 @@ if __name__ == "__main__":
             niche_override=args.niche,
             test_url=args.test_url,
             force_next=args.force_next,
-            reset_state=args.reset_state
+            reset_state=args.reset_state,
+            mode=args.mode
         ))

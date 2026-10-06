@@ -79,6 +79,22 @@ def normalize_url(url: str) -> str:
     cleaned = urllib.parse.urlunparse((parsed.scheme, parsed.netloc, parsed.path, parsed.params, parsed.query, ""))
     return cleaned.rstrip("/")
 
+def make_dedupe_key(url: str) -> str:
+    """
+    Identity of a business for deduplication. Websites collapse to their bare domain so
+    http/https, www, trailing paths and location pages all match; social profiles keep their path.
+    """
+    parsed = urllib.parse.urlparse(normalize_url(url))
+    host = parsed.netloc.lower().split(":")[0]
+    if host.startswith("www."):
+        host = host[4:]
+    if any(host.endswith(s) for s in ("instagram.com", "facebook.com", "fb.com")):
+        return f"{host}{parsed.path.lower().rstrip('/')}"
+    if host.endswith("google.com"):
+        # Maps links identify the place in the query string (?cid=...)
+        return f"{host}{parsed.path.rstrip('/')}?{parsed.query}"
+    return host
+
 def build_overpass_query(city: str, niche: str, limit: int = 15, bbox: Optional[str] = None) -> str:
     """
     Construct Overpass QL query accepting businesses with EITHER a website,
@@ -199,9 +215,12 @@ def discover_leads(city: str, niche: str, limit: int = 10, bbox: Optional[str] =
             norm_url = instagram_url or facebook_url
             campaign_strategy = "no_website"
 
-        if not norm_url or norm_url in seen_urls:
+        if not norm_url:
             continue
-        seen_urls.add(norm_url)
+        dedupe_key = make_dedupe_key(norm_url)
+        if dedupe_key in seen_urls:
+            continue
+        seen_urls.add(dedupe_key)
 
         name = tags.get("name") or tags.get("operator") or tags.get("brand") or "Local Business"
         osm_id = element.get("id")
@@ -213,6 +232,7 @@ def discover_leads(city: str, niche: str, limit: int = 10, bbox: Optional[str] =
         lead = {
             "business_name": name,
             "website_url": norm_url,
+            "dedupe_key": dedupe_key,
             "city": city,
             "niche": niche,
             "initial_emails": initial_emails,

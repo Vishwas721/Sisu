@@ -9,7 +9,7 @@ from typing import Dict, Any, List, Optional, Tuple
 
 from config import config, TARGET_CITIES, TARGET_NICHES
 from database import Database
-from discovery import discover_leads
+from discovery import discover_leads, make_dedupe_key
 from extractor import WebExtractor
 from ai_drafter import AIDraftingEngine
 
@@ -200,12 +200,12 @@ async def process_single_lead(
     """
     url = lead["website_url"]
     name = lead.get("business_name", "Unknown Business")
+    dedupe_key = lead.get("dedupe_key") or make_dedupe_key(url)
 
     # 1. Pre-scrape Deduplication Check to save compute cycles
-    if await db.website_exists(url):
+    if await db.lead_exists(dedupe_key):
         logger.info(f"[DEDUPLICATION] Skipping '{name}' ({url}) - already exists in database.")
-        existing = await db.get_lead_by_url(url)
-        return {"status": "skipped", "lead_id": existing["id"] if existing else None, "url": url, "business_name": name}
+        return {"status": "skipped", "lead_id": None, "url": url, "business_name": name}
 
     # 2. Stealth Scraping / Bypass
     strategy = lead.get("campaign_strategy")
@@ -265,7 +265,16 @@ async def process_single_lead(
         "city": lead.get("city"),
         "niche": lead.get("niche"),
         "raw_summary": scraped_data.get("raw_summary"),
-        "campaign_strategy": strategy
+        "campaign_strategy": strategy,
+        "dedupe_key": dedupe_key,
+        "phone": lead.get("phone"),
+        "facebook_url": facebook_url,
+        "address": lead.get("address"),
+        "lead_score": scraped_data.get("lead_score"),
+        "technical_flaws": scraped_data.get("technical_flaws", []),
+        "rating": lead.get("rating"),
+        "review_count": lead.get("review_count"),
+        "source": lead.get("source", "osm"),
     }
 
     lead_id = await db.insert_lead(record)

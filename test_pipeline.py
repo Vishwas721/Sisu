@@ -53,6 +53,7 @@ async def test_full_flow():
     test_record = {
         "business_name": "Austin Dental Care Clinic",
         "website_url": "https://austindentalcare-test-sample.com",
+        "dedupe_key": "austindentalcare-test-sample.com",
         "emails": ["contact@austindentalcare-test.com", "info@austindentalcare-test.com"],
         "instagram_url": "https://instagram.com/austindentalcare",
         "linkedin_url": "https://linkedin.com/company/austindentalcare",

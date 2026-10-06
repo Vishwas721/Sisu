@@ -1,6 +1,6 @@
 import logging
 from pathlib import Path
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Set
 import asyncpg
 from config import config
 
@@ -35,62 +35,37 @@ class Database:
             logger.info("Database connection pool closed.")
 
     async def init_schema(self):
-        """Initialize and migrate database schema to include campaign_strategy."""
+        """Create the leads table and apply additive migrations from schema.sql."""
         if not self.pool:
             await self.connect()
 
-        if SCHEMA_FILE.exists():
-            with open(SCHEMA_FILE, "r", encoding="utf-8") as f:
-                schema_sql = f.read()
-            async with self.pool.acquire() as conn:
-                await conn.execute(schema_sql)
-                # Ensure campaign_strategy column and index exist on existing tables
-                await conn.execute("ALTER TABLE leads ADD COLUMN IF NOT EXISTS campaign_strategy VARCHAR(50);")
-                await conn.execute("CREATE INDEX IF NOT EXISTS idx_leads_campaign_strategy ON leads (campaign_strategy);")
-            logger.info("Schema initialized and verified successfully.")
-        else:
-            # Fallback inline schema creation
-            schema_sql = """
-            CREATE TABLE IF NOT EXISTS leads (
-                id SERIAL PRIMARY KEY,
-                business_name VARCHAR(255) NOT NULL,
-                website_url TEXT NOT NULL UNIQUE,
-                emails TEXT[] DEFAULT '{}',
-                instagram_url TEXT,
-                linkedin_url TEXT,
-                ai_outreach_message TEXT,
-                status VARCHAR(50) DEFAULT 'pending' NOT NULL,
-                city VARCHAR(100),
-                niche VARCHAR(100),
-                raw_summary TEXT,
-                campaign_strategy VARCHAR(50),
-                created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP NOT NULL,
-                updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP NOT NULL
-            );
-            CREATE INDEX IF NOT EXISTS idx_leads_website_url ON leads (website_url);
-            CREATE INDEX IF NOT EXISTS idx_leads_status ON leads (status);
-            CREATE INDEX IF NOT EXISTS idx_leads_campaign_strategy ON leads (campaign_strategy);
-            """
-            async with self.pool.acquire() as conn:
-                await conn.execute(schema_sql)
-                await conn.execute("ALTER TABLE leads ADD COLUMN IF NOT EXISTS campaign_strategy VARCHAR(50);")
-                await conn.execute("CREATE INDEX IF NOT EXISTS idx_leads_campaign_strategy ON leads (campaign_strategy);")
-            logger.info("Schema initialized from fallback definition.")
+        schema_sql = SCHEMA_FILE.read_text(encoding="utf-8")
+        async with self.pool.acquire() as conn:
+            await conn.execute(schema_sql)
+        logger.info("Schema initialized and verified successfully.")
 
-    async def website_exists(self, website_url: str) -> bool:
-        """Check if website_url has already been stored to avoid redundant processing."""
+    async def lead_exists(self, dedupe_key: str) -> bool:
+        """Check if a business (by dedupe key) is already stored to avoid redundant processing."""
         if not self.pool:
             await self.connect()
         async with self.pool.acquire() as conn:
             val = await conn.fetchval(
-                "SELECT EXISTS(SELECT 1 FROM leads WHERE website_url = $1)",
-                website_url
+                "SELECT EXISTS(SELECT 1 FROM leads WHERE dedupe_key = $1)",
+                dedupe_key
             )
             return bool(val)
 
+    async def get_existing_keys(self) -> Set[str]:
+        """All stored dedupe keys, used to filter discovery results before scraping."""
+        if not self.pool:
+            await self.connect()
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch("SELECT dedupe_key FROM leads WHERE dedupe_key IS NOT NULL")
+            return {r["dedupe_key"] for r in rows}
+
     async def insert_lead(self, lead: Dict[str, Any]) -> Optional[int]:
         """
-        Insert scraped lead with deduplication using ON CONFLICT DO NOTHING.
+        Insert scraped lead; a duplicate website_url or dedupe_key is skipped via ON CONFLICT DO NOTHING.
         Accepts and stores campaign_strategy (no_website, legacy_redesign, ai_automation).
         Returns the new lead ID if inserted, or None if skipped due to conflict.
         """
@@ -109,9 +84,18 @@ class Database:
             city,
             niche,
             raw_summary,
-            campaign_strategy
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-        ON CONFLICT (website_url) DO NOTHING
+            campaign_strategy,
+            dedupe_key,
+            phone,
+            facebook_url,
+            address,
+            lead_score,
+            technical_flaws,
+            rating,
+            review_count,
+            source
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
+        ON CONFLICT DO NOTHING
         RETURNING id;
         """
 
@@ -130,7 +114,16 @@ class Database:
                 lead.get("city"),
                 lead.get("niche"),
                 lead.get("raw_summary"),
-                strategy
+                strategy,
+                lead.get("dedupe_key"),
+                lead.get("phone"),
+                lead.get("facebook_url"),
+                lead.get("address"),
+                lead.get("lead_score"),
+                lead.get("technical_flaws", []),
+                lead.get("rating"),
+                lead.get("review_count"),
+                lead.get("source"),
             )
             if lead_id:
                 logger.info(

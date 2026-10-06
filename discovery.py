@@ -95,6 +95,20 @@ def make_dedupe_key(url: str) -> str:
         return f"{host}{parsed.path.rstrip('/')}?{parsed.query}"
     return host
 
+def resolve_bbox(city: str, bbox: Optional[str] = None) -> str:
+    """Bounding box "South,West,North,East" for a city from TARGET_CITIES."""
+    if bbox:
+        return bbox
+    from config import TARGET_CITIES
+    if city in TARGET_CITIES:
+        return TARGET_CITIES[city]
+    for name, coords in TARGET_CITIES.items():
+        if name.lower() == city.lower() or city.lower() in name.lower():
+            return coords
+    # Fallback bounding box for Central Austin, TX (South, West, North, East)
+    logger.warning(f"City '{city}' not in TARGET_CITIES; falling back to central Austin")
+    return "30.25,-97.76,30.30,-97.70"
+
 def build_overpass_query(city: str, niche: str, bbox: Optional[str] = None) -> str:
     """
     Construct Overpass QL query accepting businesses with EITHER a website,
@@ -102,22 +116,7 @@ def build_overpass_query(city: str, niche: str, bbox: Optional[str] = None) -> s
     """
     niche_lower = niche.lower().strip()
     tag_pairs = NICHE_TAG_MAPPINGS.get(niche_lower, [('amenity', niche_lower)])
-
-    if not bbox:
-        try:
-            from config import TARGET_CITIES
-            bbox = TARGET_CITIES.get(city)
-            if not bbox:
-                for name, coords in TARGET_CITIES.items():
-                    if name.lower() == city.lower() or city.lower() in name.lower():
-                        bbox = coords
-                        break
-        except ImportError:
-            bbox = None
-
-    if not bbox:
-        # Fallback bounding box for Central Austin, TX (South, West, North, East)
-        bbox = "30.25,-97.76,30.30,-97.70"
+    bbox = resolve_bbox(city, bbox)
 
     filters = []
     # Accept businesses that have EITHER a website, contact:instagram, OR contact:facebook tag
@@ -149,7 +148,7 @@ def build_overpass_query(city: str, niche: str, bbox: Optional[str] = None) -> s
 out tags;"""
     return query
 
-def discover_leads(
+def discover_osm_leads(
     city: str,
     niche: str,
     limit: int = 10,
@@ -257,7 +256,8 @@ def discover_leads(
             "facebook_url": facebook_url,
             "campaign_strategy": campaign_strategy,
             "osm_id": osm_id,
-            "osm_tags": tags
+            "osm_tags": tags,
+            "source": "osm",
         }
         leads.append(lead)
 
@@ -266,6 +266,124 @@ def discover_leads(
 
     logger.info(f"Filtered {len(leads)} valid businesses for niche='{niche}' in '{city}'.")
     return leads
+
+GOOGLE_PLACES_URL = "https://places.googleapis.com/v1/places:searchText"
+GOOGLE_PLACES_FIELDS = ",".join([
+    "places.id", "places.displayName", "places.websiteUri", "places.nationalPhoneNumber",
+    "places.internationalPhoneNumber", "places.rating", "places.userRatingCount",
+    "places.formattedAddress", "places.businessStatus", "places.googleMapsUri", "nextPageToken",
+])
+# Text Search returns at most 3 pages of 20
+GOOGLE_MAX_PAGES = 3
+
+def discover_google_places(
+    city: str,
+    niche: str,
+    api_key: str,
+    bbox: Optional[str] = None,
+    exclude_keys: Optional[Set[str]] = None
+) -> List[Dict[str, Any]]:
+    """
+    Query Google Places Text Search (New) for "<niche> in <city>", restricted to the city's bbox.
+    Far better coverage than OSM, and returns phone, rating and review count. Places without a
+    websiteUri become 'no_website' leads reachable by phone.
+    """
+    exclude_keys = exclude_keys or set()
+    south, west, north, east = (float(x) for x in resolve_bbox(city, bbox).split(","))
+    headers = {
+        "Content-Type": "application/json",
+        "X-Goog-Api-Key": api_key,
+        "X-Goog-FieldMask": GOOGLE_PLACES_FIELDS,
+    }
+    body: Dict[str, Any] = {
+        "textQuery": f"{niche} in {city}",
+        "pageSize": 20,
+        "locationRestriction": {"rectangle": {
+            "low": {"latitude": south, "longitude": west},
+            "high": {"latitude": north, "longitude": east},
+        }},
+    }
+
+    places: List[Dict[str, Any]] = []
+    for _ in range(GOOGLE_MAX_PAGES):
+        try:
+            response = requests.post(GOOGLE_PLACES_URL, json=body, headers=headers, timeout=30)
+        except requests.RequestException as e:
+            logger.warning(f"Google Places request failed: {e}")
+            break
+        if response.status_code != 200:
+            logger.warning(f"Google Places returned HTTP {response.status_code}: {response.text[:300]}")
+            break
+        data = response.json()
+        places.extend(data.get("places", []))
+        if not data.get("nextPageToken"):
+            break
+        body["pageToken"] = data["nextPageToken"]
+
+    leads: List[Dict[str, Any]] = []
+    for place in places:
+        if place.get("businessStatus", "OPERATIONAL") != "OPERATIONAL":
+            continue
+        website = place.get("websiteUri")
+        if website:
+            website_url = normalize_url(website)
+            dedupe_key = make_dedupe_key(website_url)
+            campaign_strategy = None
+        else:
+            website_url = place.get("googleMapsUri") or f"https://www.google.com/maps/place/?q=place_id:{place['id']}"
+            dedupe_key = f"gplace:{place['id']}"
+            campaign_strategy = "no_website"
+        if dedupe_key in exclude_keys:
+            continue
+
+        leads.append({
+            "business_name": (place.get("displayName") or {}).get("text", "Local Business"),
+            "website_url": website_url,
+            "dedupe_key": dedupe_key,
+            "city": city,
+            "niche": niche,
+            "initial_emails": [],
+            "phone": place.get("internationalPhoneNumber") or place.get("nationalPhoneNumber"),
+            "address": place.get("formattedAddress"),
+            "rating": place.get("rating"),
+            "review_count": place.get("userRatingCount"),
+            "instagram_url": None,
+            "facebook_url": None,
+            "campaign_strategy": campaign_strategy,
+            "source": "google",
+        })
+
+    logger.info(f"Google Places: {len(leads)} new businesses for '{niche}' in '{city}' ({len(places)} returned).")
+    return leads
+
+def discover_leads(
+    city: str,
+    niche: str,
+    limit: int = 10,
+    bbox: Optional[str] = None,
+    exclude_keys: Optional[Set[str]] = None
+) -> List[Dict[str, Any]]:
+    """
+    Combine Google Places (when GOOGLE_PLACES_API_KEY is set) with OpenStreetMap, deduplicated
+    and capped at limit. Google results come first: fresher data, and they include phone numbers.
+    """
+    from config import config
+    seen = set(exclude_keys or set())
+    combined: List[Dict[str, Any]] = []
+
+    if config.GOOGLE_PLACES_API_KEY:
+        for lead in discover_google_places(city, niche, config.GOOGLE_PLACES_API_KEY, bbox=bbox, exclude_keys=seen):
+            if lead["dedupe_key"] not in seen:
+                seen.add(lead["dedupe_key"])
+                combined.append(lead)
+
+    if len(combined) < limit:
+        for lead in discover_osm_leads(city, niche, limit=limit - len(combined), bbox=bbox, exclude_keys=seen):
+            if lead["dedupe_key"] not in seen:
+                seen.add(lead["dedupe_key"])
+                combined.append(lead)
+
+    return combined[:limit]
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)

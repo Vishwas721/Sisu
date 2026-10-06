@@ -1,6 +1,6 @@
 import logging
 import urllib.parse
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Set
 import requests
 
 logger = logging.getLogger("leads_pipeline.discovery")
@@ -95,7 +95,7 @@ def make_dedupe_key(url: str) -> str:
         return f"{host}{parsed.path.rstrip('/')}?{parsed.query}"
     return host
 
-def build_overpass_query(city: str, niche: str, limit: int = 15, bbox: Optional[str] = None) -> str:
+def build_overpass_query(city: str, niche: str, bbox: Optional[str] = None) -> str:
     """
     Construct Overpass QL query accepting businesses with EITHER a website,
     contact:instagram, OR contact:facebook tag.
@@ -140,21 +140,32 @@ def build_overpass_query(city: str, niche: str, limit: int = 15, bbox: Optional[
 
     filter_block = "\n  ".join(filters)
 
-    query = f"""[out:json][timeout:25];
+    # No result limit: Overpass returns elements in a fixed order, so a limit would hand back the
+    # same first N businesses every run. Tags-only output stays small even for big cities.
+    query = f"""[out:json][timeout:90];
 (
   {filter_block}
 );
-out tags {limit};"""
+out tags;"""
     return query
 
-def discover_leads(city: str, niche: str, limit: int = 10, bbox: Optional[str] = None) -> List[Dict[str, Any]]:
+def discover_leads(
+    city: str,
+    niche: str,
+    limit: int = 10,
+    bbox: Optional[str] = None,
+    exclude_keys: Optional[Set[str]] = None
+) -> List[Dict[str, Any]]:
     """
     Query Overpass API for businesses in given city and niche that include EITHER
     website, contact:instagram, or contact:facebook.
     Assigns campaign_strategy = 'no_website' if social links exist but no website.
+    Businesses whose dedupe key is in exclude_keys (already in the database) are skipped
+    before the limit is applied, so each run reaches further into the city.
     """
+    exclude_keys = exclude_keys or set()
     logger.info(f"Discovering leads for niche='{niche}' in city='{city}' (limit={limit}, bbox={bbox})...")
-    query = build_overpass_query(city, niche, limit, bbox=bbox)
+    query = build_overpass_query(city, niche, bbox=bbox)
 
     # Overpass usage policy asks clients to identify themselves rather than pose as a browser
     headers = {
@@ -166,7 +177,7 @@ def discover_leads(city: str, niche: str, limit: int = 10, bbox: Optional[str] =
     for endpoint in OVERPASS_ENDPOINTS:
         try:
             logger.debug(f"Querying Overpass endpoint: {endpoint}")
-            response = requests.post(endpoint, data={"data": query}, headers=headers, timeout=25)
+            response = requests.post(endpoint, data={"data": query}, headers=headers, timeout=100)
             if response.status_code == 200:
                 data = response.json()
                 raw_elements = data.get("elements", [])
@@ -223,7 +234,7 @@ def discover_leads(city: str, niche: str, limit: int = 10, bbox: Optional[str] =
         if not norm_url:
             continue
         dedupe_key = make_dedupe_key(norm_url)
-        if dedupe_key in seen_urls:
+        if dedupe_key in seen_urls or dedupe_key in exclude_keys:
             continue
         seen_urls.add(dedupe_key)
 

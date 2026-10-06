@@ -426,11 +426,13 @@ async def run_pipeline(
 
             # Extract sufficient candidates so duplicates don't prematurely exhaust the batch
             discovery_limit = max(30, remaining_quota * 3)
+            existing_keys = await db.get_existing_keys()
             leads_to_process = discover_leads(
                 city=current_city,
                 niche=current_niche,
                 limit=discovery_limit,
-                bbox=bbox
+                bbox=bbox,
+                exclude_keys=existing_keys
             )
 
             next_city_idx, next_niche_idx = get_next_target(

@@ -217,21 +217,39 @@ async def process_single_lead(
         scraped_data = await extractor.scrape_lead(url, business_name=name)
         strategy = scraped_data.get("campaign_strategy", "legacy_redesign")
 
+    async def disqualify(reason: str) -> Dict[str, Any]:
+        # Stored (never shown in the dashboard) so later runs don't rediscover and rescrape it
+        logger.info(f"[DISQUALIFIED] '{name}' ({url}): {reason}")
+        await db.insert_lead({
+            "business_name": name,
+            "website_url": url,
+            "dedupe_key": dedupe_key,
+            "status": "disqualified",
+            "city": lead.get("city"),
+            "niche": lead.get("niche"),
+            "raw_summary": reason,
+            "campaign_strategy": strategy,
+            "lead_score": scraped_data.get("lead_score"),
+            "source": lead.get("source", "osm"),
+        })
+        return {"status": "disqualified", "lead_id": None, "url": url, "business_name": name, "reason": reason}
+
     scrape_status = scraped_data.get("scrape_status", "")
     if scrape_status == "error" or scrape_status.startswith("http_"):
         # Dead or erroring sites are usually closed businesses, not redesign prospects
-        logger.info(f"[SCRAPE FAILED] '{name}' ({url}) returned '{scrape_status}'. Not saving.")
-        return {"status": "scrape_failed", "lead_id": None, "url": url, "business_name": name}
+        return await disqualify(f"Website failed to load ({scrape_status})")
 
     if strategy == "not_a_lead":
-        logger.info(f"[NOT A LEAD] '{name}' ({url}) has a modern site with online booking (score {scraped_data.get('lead_score')}). Skipping.")
-        return {"status": "not_a_lead", "lead_id": None, "url": url, "business_name": name}
+        return await disqualify(f"Modern site with little to fix (score {scraped_data.get('lead_score')})")
 
     # Merge any emails already discovered from OSM with scraped emails
-    all_emails = list(set(lead.get("initial_emails", []) + scraped_data.get("emails", [])))
+    all_emails = sorted(set(lead.get("initial_emails", []) + scraped_data.get("emails", [])))
     instagram_url = scraped_data.get("instagram_url") or lead.get("instagram_url")
     linkedin_url = scraped_data.get("linkedin_url") or lead.get("linkedin_url")
     facebook_url = lead.get("facebook_url")
+
+    if not (all_emails or lead.get("phone") or instagram_url or facebook_url):
+        return await disqualify("No email, phone or social profile to contact")
 
     lead_context = {
         "business_name": name,

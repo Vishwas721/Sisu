@@ -95,19 +95,53 @@ def make_dedupe_key(url: str) -> str:
         return f"{host}{parsed.path.rstrip('/')}?{parsed.query}"
     return host
 
+NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
+_geocode_cache: Dict[str, str] = {}
+
+def geocode_city(city: str) -> str:
+    """
+    Bounding box "South,West,North,East" for any city name via OpenStreetMap Nominatim.
+    Settlements are preferred so "Springfield" doesn't resolve to a county or state.
+    Raises ValueError if nothing matches.
+    """
+    key = city.lower().strip()
+    if key in _geocode_cache:
+        return _geocode_cache[key]
+
+    headers = {"User-Agent": "SisuLeadPipeline/1.0 (+https://github.com/Vishwas721/Sisu)"}
+    results: List[Dict[str, Any]] = []
+    for params in ({"featureType": "settlement"}, {}):
+        response = requests.get(
+            NOMINATIM_URL,
+            params={"q": city, "format": "jsonv2", "limit": 1, **params},
+            headers=headers,
+            timeout=20,
+        )
+        response.raise_for_status()
+        results = response.json()
+        if results:
+            break
+    if not results:
+        raise ValueError(f"Could not find a city called '{city}'")
+
+    # Nominatim's boundingbox is [south, north, west, east]
+    south, north, west, east = (float(x) for x in results[0]["boundingbox"])
+    if north - south > 2 or east - west > 2:
+        logger.warning(f"'{city}' resolved to a very large area ({results[0].get('display_name')}); discovery may be slow")
+    bbox = f"{south},{west},{north},{east}"
+    logger.info(f"Geocoded '{city}' -> {results[0].get('display_name')} [{bbox}]")
+    _geocode_cache[key] = bbox
+    return bbox
+
 def resolve_bbox(city: str, bbox: Optional[str] = None) -> str:
-    """Bounding box "South,West,North,East" for a city from TARGET_CITIES."""
+    """Bounding box "South,West,North,East": TARGET_CITIES first, otherwise geocoded."""
     if bbox:
         return bbox
     from config import TARGET_CITIES
-    if city in TARGET_CITIES:
-        return TARGET_CITIES[city]
     for name, coords in TARGET_CITIES.items():
-        if name.lower() == city.lower() or city.lower() in name.lower():
+        if name.lower() == city.lower().strip():
             return coords
-    # Fallback bounding box for Central Austin, TX (South, West, North, East)
-    logger.warning(f"City '{city}' not in TARGET_CITIES; falling back to central Austin")
-    return "30.25,-97.76,30.30,-97.70"
+    return geocode_city(city)
 
 def build_overpass_query(city: str, niche: str, bbox: Optional[str] = None) -> str:
     """

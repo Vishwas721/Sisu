@@ -56,3 +56,16 @@ def test_google_places_maps_website_and_no_website_leads():
     assert by_name["Bob Plumbing"]["review_count"] == 88
     assert by_name["Smile"]["dedupe_key"] == "smile.com"
     assert by_name["Smile"]["campaign_strategy"] is None
+
+def test_geocode_unknown_city_uses_nominatim_bbox():
+    response = mock.Mock()
+    response.json.return_value = [{"boundingbox": ["43.50", "43.69", "-116.36", "-116.09"], "display_name": "Boise"}]
+    with mock.patch("discovery.requests.get", return_value=response):
+        assert discovery.resolve_bbox("Boise Test City") == "43.5,-116.36,43.69,-116.09"
+
+def test_geocode_raises_for_unknown_place():
+    response = mock.Mock()
+    response.json.return_value = []
+    with mock.patch("discovery.requests.get", return_value=response):
+        with pytest.raises(ValueError):
+            discovery.resolve_bbox("Nowhere At All 123")

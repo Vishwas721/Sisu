@@ -189,6 +189,10 @@ def discover_leads(city: str, niche: str, limit: int = 10, bbox: Optional[str] =
         if not website and not instagram and not facebook:
             continue
 
+        # Chains and franchises (Aspen Dental, Jiffy Lube...) buy websites from head office
+        if tags.get("brand") or tags.get("brand:wikidata"):
+            continue
+
         # Format social links if present
         instagram_url = None
         if instagram:

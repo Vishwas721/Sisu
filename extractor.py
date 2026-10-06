@@ -41,7 +41,19 @@ class WebExtractor:
         "calendly.com", "acuityscheduling.com", "zocdoc.com", "nexhealth.com",
         "squareup.com/appointments", "setmore.com", "simplybook", "appointlet",
         "jane.app", "vagaro.com", "mindbodyonline.com", "hubspot.com/meetings",
-        "tidycal.com", "schedulista.com", "doctolib"
+        "tidycal.com", "schedulista.com", "doctolib",
+        # Dental / medical
+        "localmed.com", "flexbook", "solutionreach", "lighthouse360", "weave.com", "modento",
+        "dentrix", "patientpop", "zocdoc", "healthgrades.com/book", "chirotouch", "janeapp.com",
+        # Home services
+        "servicetitan", "housecallpro", "getjobber.com", "jobber.com", "workiz", "fieldedge",
+        "scheduleengine", "servicefusion",
+        # Salon / spa / fitness / restaurants
+        "booksy.com", "fresha.com", "glossgenius", "styleseat", "schedulicity", "boulevard.io",
+        "zenoti", "mindbody", "opentable.com", "resy.com", "sevenrooms", "exploretock",
+        # Generic booking embeds
+        "booking.setmore", "youcanbook.me", "10to8", "oncehub", "cal.com", "square.site",
+        "book.squareup.com", "wixbookings", "bookings-widget",
     ]
 
     def __init__(self, headless: Optional[bool] = None, timeout_ms: Optional[int] = None):

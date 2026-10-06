@@ -76,6 +76,31 @@ class WebExtractor:
         self.headless = config.PLAYWRIGHT_HEADLESS if headless is None else headless
         self.timeout_ms = config.PAGE_TIMEOUT_MS if timeout_ms is None else timeout_ms
         self.stealth = Stealth()
+        self._playwright_cm = None
+        self._browser: Optional[Browser] = None
+
+    async def _get_browser(self) -> Browser:
+        """Launch Chromium once and share it; each lead gets its own isolated context."""
+        if self._browser is None:
+            self._playwright_cm = self.stealth.use_async(async_playwright())
+            playwright = await self._playwright_cm.__aenter__()
+            self._browser = await playwright.chromium.launch(
+                headless=self.headless,
+                args=[
+                    "--disable-blink-features=AutomationControlled",
+                    "--no-sandbox",
+                    "--disable-dev-shm-usage"
+                ]
+            )
+        return self._browser
+
+    async def close(self) -> None:
+        if self._browser is not None:
+            await self._browser.close()
+            self._browser = None
+        if self._playwright_cm is not None:
+            await self._playwright_cm.__aexit__(None, None, None)
+            self._playwright_cm = None
 
     async def _wait_for_render(self, page: Page, timeout_ms: int = 8000) -> None:
         """Give JS-rendered sites (Wix, Squarespace, React) time to populate the DOM."""
@@ -347,94 +372,85 @@ class WebExtractor:
             "campaign_strategy": "legacy_redesign"
         }
 
-        async with self.stealth.use_async(async_playwright()) as p:
-            browser: Browser = await p.chromium.launch(
-                headless=self.headless,
-                args=[
-                    "--disable-blink-features=AutomationControlled",
-                    "--no-sandbox",
-                    "--disable-dev-shm-usage"
-                ]
-            )
-            context = await browser.new_context(
-                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-                viewport={"width": 1280, "height": 800},
-                locale="en-US",
-                timezone_id="America/Chicago"
-            )
-            page = await context.new_page()
+        browser = await self._get_browser()
+        context = await browser.new_context(
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+            viewport={"width": 1280, "height": 800},
+            locale="en-US",
+            timezone_id="America/Chicago"
+        )
+        page = await context.new_page()
 
-            try:
-                # Start timing after browser launch so Chromium startup isn't counted as page load
-                start_time = time.time()
-                response = await page.goto(target_url, wait_until="domcontentloaded", timeout=self.timeout_ms)
-                status_code = response.status if response else 0
-                load_time = round(time.time() - start_time, 2)
-                result["load_time_sec"] = load_time
+        try:
+            # Start timing after browser launch so Chromium startup isn't counted as page load
+            start_time = time.time()
+            response = await page.goto(target_url, wait_until="domcontentloaded", timeout=self.timeout_ms)
+            status_code = response.status if response else 0
+            load_time = round(time.time() - start_time, 2)
+            result["load_time_sec"] = load_time
 
-                if load_time > 5.0:
-                    result["technical_flaws"].append(f"Slow initial page load time ({load_time}s)")
-                    result["issues"].append("slow_load")
-                    result["lead_score"] += ISSUE_WEIGHTS["slow_load"]
+            if load_time > 5.0:
+                result["technical_flaws"].append(f"Slow initial page load time ({load_time}s)")
+                result["issues"].append("slow_load")
+                result["lead_score"] += ISSUE_WEIGHTS["slow_load"]
 
-                await self._wait_for_render(page)
+            await self._wait_for_render(page)
 
-                # Extract page data and evaluate strategy
-                page_data = await self._extract_from_page(page, target_url)
-                result["emails"] = page_data["emails"]
-                result["instagram_url"] = page_data["instagram_url"]
-                result["linkedin_url"] = page_data["linkedin_url"]
-                result["technical_flaws"].extend(page_data["technical_flaws"])
-                # Lead with the strongest problems: page-level issues first, slow load after
-                result["issues"] = page_data["issues"] + result["issues"]
-                result["lead_score"] += page_data["lead_score"]
-                result["campaign_strategy"] = page_data["campaign_strategy"]
-                if result["lead_score"] < MIN_LEAD_SCORE:
-                    result["campaign_strategy"] = "not_a_lead"
+            # Extract page data and evaluate strategy
+            page_data = await self._extract_from_page(page, target_url)
+            result["emails"] = page_data["emails"]
+            result["instagram_url"] = page_data["instagram_url"]
+            result["linkedin_url"] = page_data["linkedin_url"]
+            result["technical_flaws"].extend(page_data["technical_flaws"])
+            # Lead with the strongest problems: page-level issues first, slow load after
+            result["issues"] = page_data["issues"] + result["issues"]
+            result["lead_score"] += page_data["lead_score"]
+            result["campaign_strategy"] = page_data["campaign_strategy"]
+            if result["lead_score"] < MIN_LEAD_SCORE:
+                result["campaign_strategy"] = "not_a_lead"
 
-                # If no emails found on homepage, check /contact or /about
-                if not result["emails"]:
-                    contact_link = await page.query_selector('a[href*="contact" i], a[href*="about" i]')
-                    if contact_link:
-                        try:
-                            contact_href = await contact_link.get_attribute("href")
-                            if contact_href:
-                                full_contact_url = urllib.parse.urljoin(target_url, contact_href)
-                                logger.info(f"Visiting contact page for {business_name}: {full_contact_url}")
-                                await page.goto(full_contact_url, wait_until="domcontentloaded", timeout=15000)
-                                await self._wait_for_render(page)
-                                contact_data = await self._extract_from_page(page, full_contact_url)
-                                for em in contact_data["emails"]:
-                                    if em not in result["emails"]:
-                                        result["emails"].append(em)
-                                if not result["instagram_url"] and contact_data["instagram_url"]:
-                                    result["instagram_url"] = contact_data["instagram_url"]
-                                if not result["linkedin_url"] and contact_data["linkedin_url"]:
-                                    result["linkedin_url"] = contact_data["linkedin_url"]
-                        except Exception as ce:
-                            logger.debug(f"Contact page lookup failed for {target_url}: {ce}")
+            # If no emails found on homepage, check /contact or /about
+            if not result["emails"]:
+                contact_link = await page.query_selector('a[href*="contact" i], a[href*="about" i]')
+                if contact_link:
+                    try:
+                        contact_href = await contact_link.get_attribute("href")
+                        if contact_href:
+                            full_contact_url = urllib.parse.urljoin(target_url, contact_href)
+                            logger.info(f"Visiting contact page for {business_name}: {full_contact_url}")
+                            await page.goto(full_contact_url, wait_until="domcontentloaded", timeout=15000)
+                            await self._wait_for_render(page)
+                            contact_data = await self._extract_from_page(page, full_contact_url)
+                            for em in contact_data["emails"]:
+                                if em not in result["emails"]:
+                                    result["emails"].append(em)
+                            if not result["instagram_url"] and contact_data["instagram_url"]:
+                                result["instagram_url"] = contact_data["instagram_url"]
+                            if not result["linkedin_url"] and contact_data["linkedin_url"]:
+                                result["linkedin_url"] = contact_data["linkedin_url"]
+                    except Exception as ce:
+                        logger.debug(f"Contact page lookup failed for {target_url}: {ce}")
 
-                summary_parts = [
-                    f"Business Name: {business_name}",
-                    f"Website: {target_url}",
-                    f"Assigned Campaign Strategy: {result['campaign_strategy']} (lead score {result['lead_score']})",
-                    f"Page Title: {page_data['title']}",
-                    f"Meta Description: {page_data['meta_description'] or 'None provided'}",
-                    f"Key Headings: {page_data['headings'] or 'None'}",
-                    f"Detected Flaws & Opportunities: {', '.join(result['technical_flaws']) if result['technical_flaws'] else 'None'}",
-                    f"Text Snippet: {page_data['text_summary'][:400]}"
-                ]
-                result["raw_summary"] = "\n".join(summary_parts)
-                result["scrape_status"] = "success" if status_code < 400 else f"http_{status_code}"
+            summary_parts = [
+                f"Business Name: {business_name}",
+                f"Website: {target_url}",
+                f"Assigned Campaign Strategy: {result['campaign_strategy']} (lead score {result['lead_score']})",
+                f"Page Title: {page_data['title']}",
+                f"Meta Description: {page_data['meta_description'] or 'None provided'}",
+                f"Key Headings: {page_data['headings'] or 'None'}",
+                f"Detected Flaws & Opportunities: {', '.join(result['technical_flaws']) if result['technical_flaws'] else 'None'}",
+                f"Text Snippet: {page_data['text_summary'][:400]}"
+            ]
+            result["raw_summary"] = "\n".join(summary_parts)
+            result["scrape_status"] = "success" if status_code < 400 else f"http_{status_code}"
 
-            except Exception as e:
-                logger.error(f"Error scraping {target_url}: {e}")
-                result["scrape_status"] = "error"
-                result["campaign_strategy"] = "legacy_redesign"
-                result["technical_flaws"].append("Website unresponsive, timed out, or connection failed")
-                result["raw_summary"] = f"Failed to load page. Error: {str(e)}"
-            finally:
-                await context.close()
-                await browser.close()
+        except Exception as e:
+            logger.error(f"Error scraping {target_url}: {e}")
+            result["scrape_status"] = "error"
+            result["campaign_strategy"] = "legacy_redesign"
+            result["technical_flaws"].append("Website unresponsive, timed out, or connection failed")
+            result["raw_summary"] = f"Failed to load page. Error: {str(e)}"
+        finally:
+            await context.close()
 
         return result

@@ -1,3 +1,5 @@
+import asyncio
+import random
 import re
 import time
 import logging
@@ -433,6 +435,8 @@ class WebExtractor:
                         if contact_href:
                             full_contact_url = urllib.parse.urljoin(target_url, contact_href)
                             logger.info(f"Visiting contact page for {business_name}: {full_contact_url}")
+                            # A person takes a moment before clicking through to the contact page
+                            await asyncio.sleep(random.uniform(1.0, 3.0))
                             await page.goto(full_contact_url, wait_until="domcontentloaded", timeout=15000)
                             await self._wait_for_render(page)
                             contact_data = await self._extract_from_page(page, full_contact_url)

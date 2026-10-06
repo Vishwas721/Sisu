@@ -25,6 +25,18 @@ SCRAPE_CONCURRENCY = 4
 RANDOM_MAX_TARGETS = 25
 # Bot protection / rate limiting, not a dead site
 BLOCKED_STATUSES = {"http_401", "http_403", "http_429", "http_503"}
+
+# Human-like pacing (seconds, picked at random within the range)
+BATCH_PAUSE = (2.0, 5.0)        # between batches of sites
+TARGET_PAUSE = (5.0, 12.0)      # between city/niche searches (Overpass / Google)
+STAGGER_STEP = (0.5, 1.5)       # between page starts inside one batch
+
+async def polite_pause(bounds: Tuple[float, float]) -> None:
+    await asyncio.sleep(random.uniform(*bounds))
+
+async def _staggered(delay: float, coro):
+    await asyncio.sleep(delay)
+    return await coro
 STATE_FILE = Path(__file__).parent / "pipeline_state.json"
 LEGACY_STATE_FILE = Path(__file__).parent / "last_city.json"
 
@@ -383,11 +395,15 @@ async def process_target(
         batch = leads_to_process[processed:processed + batch_size]
         for offset, lead in enumerate(batch, processed + 1):
             logger.info(f"[{city} | {niche}] Processing Lead {offset}/{len(leads_to_process)}: '{lead['business_name']}'")
+        # Pages in a batch start a moment apart rather than all at once
+        delays = [i * random.uniform(*STAGGER_STEP) for i in range(len(batch))]
         results = await asyncio.gather(
-            *(process_single_lead(lead, db, extractor, ai_engine) for lead in batch),
+            *(_staggered(d, process_single_lead(lead, db, extractor, ai_engine)) for d, lead in zip(delays, batch)),
             return_exceptions=True
         )
         processed += len(batch)
+        if processed < len(leads_to_process) and inserted < remaining_quota:
+            await polite_pause(BATCH_PAUSE)
 
         for lead, res in zip(batch, results):
             if isinstance(res, Exception):
@@ -489,6 +505,8 @@ async def run_pipeline(
                     if city_override and niche_override:
                         break
                     continue
+                if tried:
+                    await polite_pause(TARGET_PAUSE)
                 tried.add((city, niche))
                 logger.info(f"[RANDOM] Picked '{niche}' in '{city}'")
                 gained, _ = await process_target(
@@ -549,6 +567,8 @@ async def run_pipeline(
         current_niche_index = start_niche_idx
 
         while successful_insertions < daily_quota and combinations_visited < total_combinations:
+            if combinations_visited:
+                await polite_pause(TARGET_PAUSE)
             current_city = city_names[current_city_index]
             current_niche = niche_names[current_niche_index]
             next_city_idx, next_niche_idx = get_next_target(

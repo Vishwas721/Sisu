@@ -92,19 +92,23 @@ def load_state(
         was_exhausted = state_data.get("target_exhausted", state_data.get("city_exhausted", False))
         timestamp = state_data.get("updated_at", "unknown")
 
-        # Resolve city index
-        if last_city_idx is None and last_city in city_names:
+        # Resolve city index (by name first, so edits to the city/niche lists don't shift position)
+        if last_city in city_names:
             last_city_idx = city_names.index(last_city)
         if last_city_idx is None or not (0 <= last_city_idx < total_cities):
             last_city_idx = 0
 
         # Resolve niche index
-        if last_niche_idx is None and last_niche in niche_names:
+        if last_niche in niche_names:
             last_niche_idx = niche_names.index(last_niche)
         if last_niche_idx is None or not (0 <= last_niche_idx < total_niches):
             last_niche_idx = 0
 
         # Resolve next indices
+        if state_data.get("next_city") in city_names:
+            next_city_idx = city_names.index(state_data["next_city"])
+        if state_data.get("next_niche") in niche_names:
+            next_niche_idx = niche_names.index(state_data["next_niche"])
         if next_city_idx is None or next_niche_idx is None:
             computed_city, computed_niche = get_next_target(last_city_idx, last_niche_idx, total_cities, total_niches)
             next_city_idx = next_city_idx if next_city_idx is not None else computed_city

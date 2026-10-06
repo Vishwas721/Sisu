@@ -31,7 +31,8 @@ config = Config()
 
 # ==============================================================================
 # Master High-Ticket B2B Service Niches
-# Populated from NICHE_TAG_MAPPINGS keys in discovery.py
+# Subset of NICHE_TAG_MAPPINGS keys in discovery.py. Aliases ("dental") and institutions that
+# never hire freelancers (hospitals, pharmacy chains) are left out of the rotation.
 # ==============================================================================
 TARGET_NICHES: List[str] = [
     # High-Ticket Trades & Craft Services
@@ -53,8 +54,6 @@ TARGET_NICHES: List[str] = [
 
     # Healthcare, Wellness & Medical
     "dentist",
-    "dental",
-    "dental clinic",
     "chiropractor",
     "physiotherapy",
     "optometrist",
@@ -64,8 +63,6 @@ TARGET_NICHES: List[str] = [
     "veterinary",
     "doctor",
     "clinic",
-    "hospital",
-    "pharmacy",
 
     # Professional & Financial Services
     "real estate",

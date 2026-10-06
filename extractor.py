@@ -2,6 +2,7 @@ import re
 import time
 import logging
 import urllib.parse
+from datetime import datetime
 from typing import Dict, Any, List, Optional, Set, Tuple
 from bs4 import BeautifulSoup
 from playwright.async_api import async_playwright, Browser, Page
@@ -15,6 +16,9 @@ EMAIL_REGEX = re.compile(r'[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+')
 
 # Common image/asset extensions and dummy domains to ignore
 IGNORE_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.gif', '.svg', '.webp', '.bmp', '.tiff', '.ico', '.js', '.css', '.woff', '.woff2'}
+# A footer this many years behind the current year counts as neglected
+STALE_COPYRIGHT_YEARS = 3
+
 IGNORE_DOMAINS = {'sentry.io', 'wixpress.com', 'example.com', 'domain.com', 'email.com', 'yourdomain.com'}
 
 def filter_emails(raw_emails_list):
@@ -105,21 +109,14 @@ class WebExtractor:
             r'(?:©|&copy;|\(c\)|copyright)\s*(?:[12][0-9]{3}\s*[-–—/]\s*)?([12][0-9]{3})',
             re.IGNORECASE
         )
-        candidates = copyright_pattern.findall(soup.get_text())
-        has_old_copyright = False
-        oldest_year = None
-        for yr_str in candidates:
-            try:
-                yr = int(yr_str)
-                if 1990 <= yr < 2022:
-                    has_old_copyright = True
-                    oldest_year = yr
-                    break
-            except ValueError:
-                pass
+        current_year = datetime.now().year
+        years = [int(y) for y in copyright_pattern.findall(soup.get_text()) if 1990 <= int(y) <= current_year]
+        # Judge by the newest year on the page; a single stale mention elsewhere shouldn't count
+        newest_year = max(years) if years else None
+        has_old_copyright = newest_year is not None and newest_year <= current_year - STALE_COPYRIGHT_YEARS
 
         if has_old_copyright:
-            flaws.append(f"Outdated copyright year ({oldest_year}) indicates neglected website maintenance")
+            flaws.append(f"Outdated copyright year ({newest_year}) indicates neglected website maintenance")
 
         if is_http or not has_viewport or has_old_copyright:
             logger.info(f"[STRATEGY EVAL] Assigned 'legacy_redesign' for {url} (HTTP: {is_http}, No Viewport: {not has_viewport}, Old Copyright: {has_old_copyright})")

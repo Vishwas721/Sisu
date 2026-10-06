@@ -320,6 +320,82 @@ async def process_single_lead(
     }
 
 # ==============================================================================
+# One (city, niche) Target
+# ==============================================================================
+async def process_target(
+    city: str,
+    niche: str,
+    inserted_so_far: int,
+    quota: int,
+    db: Database,
+    extractor: WebExtractor,
+    ai_engine: AIDraftingEngine,
+    bbox: Optional[str] = None
+) -> Tuple[int, bool]:
+    """
+    Discover and process leads for one city + niche until the quota is met or candidates run out.
+    Returns (leads inserted, whether every candidate was processed).
+    """
+    remaining_quota = quota - inserted_so_far
+    logger.info("------------------------------------------------------------------")
+    logger.info(f"[TARGET] city={city} | niche={niche}")
+    logger.info(f"Acquisition Progress: {inserted_so_far}/{quota} new leads inserted ({remaining_quota} needed)")
+    logger.info("------------------------------------------------------------------")
+
+    # Extract sufficient candidates so duplicates don't prematurely exhaust the batch
+    discovery_limit = max(30, remaining_quota * 3)
+    existing_keys = await db.get_existing_keys()
+    try:
+        # discover_leads does blocking HTTP; keep it off the event loop
+        leads_to_process = await asyncio.to_thread(
+            discover_leads,
+            city=city,
+            niche=niche,
+            limit=discovery_limit,
+            bbox=bbox,
+            exclude_keys=existing_keys
+        )
+    except ValueError as e:
+        # Unknown city from geocoding
+        logger.error(f"[TARGET SKIPPED] {e}")
+        return 0, True
+
+    if not leads_to_process:
+        logger.warning(f"[TARGET EXHAUSTED] No new candidate leads for '{city}' + '{niche}' (Google Places / Overpass).")
+        return 0, True
+
+    logger.info(f"Discovered {len(leads_to_process)} candidate leads for '{niche}' in '{city}'. Commencing extraction...")
+
+    inserted = 0
+    processed = 0
+    while processed < len(leads_to_process) and inserted < remaining_quota:
+        # Never run more leads at once than the quota still needs, so it can't overshoot
+        batch_size = min(SCRAPE_CONCURRENCY, remaining_quota - inserted)
+        batch = leads_to_process[processed:processed + batch_size]
+        for offset, lead in enumerate(batch, processed + 1):
+            logger.info(f"[{city} | {niche}] Processing Lead {offset}/{len(leads_to_process)}: '{lead['business_name']}'")
+        results = await asyncio.gather(
+            *(process_single_lead(lead, db, extractor, ai_engine) for lead in batch),
+            return_exceptions=True
+        )
+        processed += len(batch)
+
+        for lead, res in zip(batch, results):
+            if isinstance(res, Exception):
+                logger.error(f"Unexpected error processing '{lead['business_name']}': {res}")
+                continue
+            # State Tracking: Only actual insertions count toward daily quota
+            if res.get("status") == "inserted" and res.get("lead_id"):
+                inserted += 1
+                logger.info(f"★ [QUOTA PROGRESS] Lead inserted [ID: {res['lead_id']}]: '{res['business_name']}' ({inserted_so_far + inserted}/{quota})")
+            else:
+                logger.info(f"○ [QUOTA PROGRESS] Skipped lead '{res.get('business_name', 'Unknown')}' ({res.get('status')}) - does not count toward quota.")
+
+    logger.info(f"Target '{city}' + '{niche}' session summary: {inserted} new leads inserted.")
+    # Unprocessed candidates remain if the quota was hit mid-list; resume here next run
+    return inserted, processed >= len(leads_to_process)
+
+# ==============================================================================
 # Main Orchestrator with Dual City & Niche Rotation
 # ==============================================================================
 async def run_pipeline(
@@ -420,29 +496,6 @@ async def run_pipeline(
         while successful_insertions < daily_quota and combinations_visited < total_combinations:
             current_city = city_names[current_city_index]
             current_niche = niche_names[current_niche_index]
-            bbox = TARGET_CITIES[current_city]
-            remaining_quota = daily_quota - successful_insertions
-
-            logger.info("------------------------------------------------------------------")
-            logger.info(f"TARGET MARKET [{current_city_index + 1}/{total_cities}]: {current_city}")
-            logger.info(f"TARGET NICHE  [{current_niche_index + 1}/{total_niches}]: {current_niche.upper()}")
-            logger.info(f"Bounding Box: {bbox}")
-            logger.info(f"Acquisition Progress: {successful_insertions}/{daily_quota} new leads inserted ({remaining_quota} needed)")
-            logger.info("------------------------------------------------------------------")
-
-            # Extract sufficient candidates so duplicates don't prematurely exhaust the batch
-            discovery_limit = max(30, remaining_quota * 3)
-            existing_keys = await db.get_existing_keys()
-            # discover_leads does blocking HTTP; keep it off the event loop
-            leads_to_process = await asyncio.to_thread(
-                discover_leads,
-                city=current_city,
-                niche=current_niche,
-                limit=discovery_limit,
-                bbox=bbox,
-                exclude_keys=existing_keys
-            )
-
             next_city_idx, next_niche_idx = get_next_target(
                 current_city_index,
                 current_niche_index,
@@ -450,60 +503,11 @@ async def run_pipeline(
                 total_niches
             )
 
-            if not leads_to_process:
-                logger.warning(
-                    f"[TARGET EXHAUSTED] No candidate leads found for '{current_city}' + '{current_niche}' (Google Places / Overpass)."
-                )
-                save_state(
-                    STATE_FILE,
-                    current_city, current_city_index,
-                    current_niche, current_niche_index,
-                    next_city_idx, next_niche_idx,
-                    target_exhausted=True,
-                    successful_insertions=successful_insertions,
-                    city_names=city_names,
-                    niche_names=niche_names
-                )
-                current_city_index, current_niche_index = next_city_idx, next_niche_idx
-                combinations_visited += 1
-                continue
-
-            logger.info(
-                f"Discovered {len(leads_to_process)} candidate leads for '{current_niche}' in '{current_city}'. "
-                f"Commencing extraction..."
+            inserted, target_exhausted = await process_target(
+                current_city, current_niche, successful_insertions, daily_quota,
+                db, extractor, ai_engine, bbox=TARGET_CITIES[current_city]
             )
-
-            target_insertions_start = successful_insertions
-
-            processed = 0
-            while processed < len(leads_to_process) and successful_insertions < daily_quota:
-                # Never run more leads at once than the quota still needs, so it can't overshoot
-                batch_size = min(SCRAPE_CONCURRENCY, daily_quota - successful_insertions)
-                batch = leads_to_process[processed:processed + batch_size]
-                for offset, lead in enumerate(batch, processed + 1):
-                    logger.info(f"[{current_city} | {current_niche}] Processing Lead {offset}/{len(leads_to_process)}: '{lead['business_name']}'")
-                results = await asyncio.gather(
-                    *(process_single_lead(lead, db, extractor, ai_engine) for lead in batch),
-                    return_exceptions=True
-                )
-                processed += len(batch)
-
-                for lead, res in zip(batch, results):
-                    if isinstance(res, Exception):
-                        logger.error(f"Unexpected error processing '{lead['business_name']}': {res}")
-                        continue
-                    # State Tracking: Only actual insertions count toward daily quota
-                    if res.get("status") == "inserted" and res.get("lead_id"):
-                        successful_insertions += 1
-                        logger.info(f"★ [QUOTA PROGRESS] Lead inserted [ID: {res['lead_id']}]: '{res['business_name']}' ({successful_insertions}/{daily_quota})")
-                    else:
-                        logger.info(f"○ [QUOTA PROGRESS] Skipped lead '{res.get('business_name', 'Unknown')}' ({res.get('status')}) - does not count toward quota.")
-
-            # Unprocessed candidates remain if the quota was hit mid-list; resume here next run
-            target_exhausted = processed >= len(leads_to_process)
-
-            target_new_leads = successful_insertions - target_insertions_start
-            logger.info(f"Target '{current_city}' + '{current_niche}' session summary: {target_new_leads} new leads inserted.")
+            successful_insertions += inserted
 
             # Check if daily quota was achieved
             if successful_insertions >= daily_quota:
@@ -527,7 +531,7 @@ async def run_pipeline(
 
             # If quota not met, all candidates for (current_city, current_niche) were processed
             logger.warning(
-                f"[AUTONOMOUS SWITCH] Target '{current_city}' + '{current_niche}' candidate URLs exhausted ({target_new_leads} new leads inserted). "
+                f"[AUTONOMOUS SWITCH] Target '{current_city}' + '{current_niche}' exhausted ({inserted} new leads inserted). "
                 f"Progress: {successful_insertions}/{daily_quota}. Advancing to next target in rotation..."
             )
             save_state(

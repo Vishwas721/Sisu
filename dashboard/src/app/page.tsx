@@ -1,8 +1,9 @@
 'use client';
 
-import React, { useState, useEffect, useTransition } from 'react';
+import React, { useState, useEffect, useTransition, useCallback } from 'react';
 import Header from '@/components/Header';
 import LeadCard from '@/components/LeadCard';
+import RunPanel from '@/components/RunPanel';
 import {
   getLeadsByStrategy,
   getStrategyStats,
@@ -176,6 +177,13 @@ export default function HomePage() {
       }
     });
   };
+
+  // After a pipeline run: reload the visible tab and stats, and refetch other tabs when opened
+  const handleRunFinished = useCallback(() => {
+    setLoadedTabs({ no_website: false, legacy_redesign: false, ai_automation: false, [activeTab]: true });
+    handleRefreshCurrentTab();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTab]);
 
   // Optimistic handler for single lead dispatch from LeadCard
   const handleLeadContacted = (id: number, businessName: string) => {
@@ -387,6 +395,9 @@ export default function HomePage() {
                 </div>
               </div>
             )}
+
+            {/* Start a pipeline run for a typed or random city + niche */}
+            <RunPanel onRunFinished={handleRunFinished} />
 
             {/* KPI Stats Ribbon */}
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">

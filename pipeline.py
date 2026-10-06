@@ -23,6 +23,8 @@ DAILY_QUOTA = 15
 SCRAPE_CONCURRENCY = 4
 # Random mode gives up after trying this many city/niche pairs
 RANDOM_MAX_TARGETS = 25
+# Bot protection / rate limiting, not a dead site
+BLOCKED_STATUSES = {"http_401", "http_403", "http_429", "http_503"}
 STATE_FILE = Path(__file__).parent / "pipeline_state.json"
 LEGACY_STATE_FILE = Path(__file__).parent / "last_city.json"
 
@@ -245,6 +247,10 @@ async def process_single_lead(
         return {"status": "disqualified", "lead_id": None, "url": url, "business_name": name, "reason": reason}
 
     scrape_status = scraped_data.get("scrape_status", "")
+    if scrape_status in BLOCKED_STATUSES:
+        # Live site refusing automated visits; not recorded, so a later run can retry it
+        logger.info(f"[BLOCKED] '{name}' ({url}) refused the scraper ({scrape_status}). Will retry on a later run.")
+        return {"status": "blocked", "lead_id": None, "url": url, "business_name": name}
     if scrape_status == "error" or scrape_status.startswith("http_"):
         # Dead or erroring sites are usually closed businesses, not redesign prospects
         return await disqualify(f"Website failed to load ({scrape_status})")

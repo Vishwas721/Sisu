@@ -51,7 +51,7 @@ DB_HOST=127.0.0.1
 DB_PORT=5432
 DB_NAME=leads_pipeline
 DB_USER=postgres
-DB_PASSWORD=1234
+DB_PASSWORD=your_password_here
 
 # Ollama LLM Configuration
 OLLAMA_BASE_URL=http://127.0.0.1:11434

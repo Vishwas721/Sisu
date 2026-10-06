@@ -13,7 +13,7 @@ class Config:
     DB_PORT: int = int(os.getenv("DB_PORT", "5432"))
     DB_NAME: str = os.getenv("DB_NAME", "leads_pipeline")
     DB_USER: str = os.getenv("DB_USER", "postgres")
-    DB_PASSWORD: str = os.getenv("DB_PASSWORD", "1234")
+    DB_PASSWORD: str = os.getenv("DB_PASSWORD", "")
 
     # Ollama settings
     OLLAMA_BASE_URL: str = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434")

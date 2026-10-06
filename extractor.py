@@ -17,6 +17,19 @@ EMAIL_REGEX = re.compile(r'[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+')
 IGNORE_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.gif', '.svg', '.webp', '.bmp', '.tiff', '.ico', '.js', '.css', '.woff', '.woff2'}
 IGNORE_DOMAINS = {'sentry.io', 'wixpress.com', 'example.com', 'domain.com', 'email.com', 'yourdomain.com'}
 
+def filter_emails(raw_emails_list):
+    clean_emails = []
+    # Block list of common frontend junk and tracking domains
+    junk_patterns = r'(sentry|wixpress|react|core-js|lodash|rspack|sentry-next|\.png|\.jpg)'
+    
+    for email in raw_emails_list:
+        email = email.lower().strip()
+        # If it doesn't match the junk pattern, keep it
+        if not re.search(junk_patterns, email):
+            clean_emails.append(email)
+            
+    return clean_emails
+
 class WebExtractor:
     SCHEDULING_SIGNATURES = [
         "calendly.com", "acuityscheduling.com", "zocdoc.com", "nexhealth.com",
@@ -159,6 +172,8 @@ class WebExtractor:
             if cleaned:
                 emails.add(cleaned)
 
+        clean_emails = filter_emails(list(emails))
+
         # 2. Instagram & LinkedIn
         instagram_url = None
         linkedin_url = None
@@ -203,7 +218,7 @@ class WebExtractor:
         all_flaws = strategy_flaws + general_flaws
 
         return {
-            "emails": list(emails),
+            "emails": clean_emails,
             "instagram_url": instagram_url,
             "linkedin_url": linkedin_url,
             "title": title,

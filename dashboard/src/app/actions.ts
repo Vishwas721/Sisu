@@ -53,6 +53,11 @@ export async function getLeadsByStrategy(
         ) AS email,
         instagram_url,
         linkedin_url,
+        facebook_url,
+        phone,
+        lead_score,
+        rating,
+        review_count,
         COALESCE(
           NULLIF(to_jsonb(leads)->>'ai_drafted_message', ''),
           NULLIF(to_jsonb(leads)->>'ai_outreach_message', ''),
@@ -63,7 +68,7 @@ export async function getLeadsByStrategy(
         created_at
       FROM leads
       WHERE ${whereCondition}
-      ORDER BY created_at ASC
+      ORDER BY lead_score DESC NULLS LAST, created_at ASC
       LIMIT $1;
     `;
 
@@ -77,6 +82,11 @@ export async function getLeadsByStrategy(
       email: row.email || null,
       instagram_url: row.instagram_url || null,
       linkedin_url: row.linkedin_url || null,
+      facebook_url: row.facebook_url || null,
+      phone: row.phone || null,
+      lead_score: row.lead_score ?? null,
+      rating: row.rating ?? null,
+      review_count: row.review_count ?? null,
       ai_drafted_message: row.ai_drafted_message || null,
       campaign_strategy: row.campaign_strategy || 'legacy_redesign',
       status: row.status || 'pending',

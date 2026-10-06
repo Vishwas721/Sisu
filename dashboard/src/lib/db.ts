@@ -8,6 +8,11 @@ export interface Lead {
   email: string | null;
   instagram_url: string | null;
   linkedin_url: string | null;
+  facebook_url: string | null;
+  phone: string | null;
+  lead_score: number | null;
+  rating: number | null;
+  review_count: number | null;
   ai_drafted_message: string | null;
   campaign_strategy: 'no_website' | 'legacy_redesign' | 'ai_automation' | string;
   status: 'pending' | 'contacted' | 'rejected' | string;

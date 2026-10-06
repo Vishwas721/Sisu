@@ -2,12 +2,14 @@
 
 import React, { useEffect, useRef, useState } from 'react';
 import {
+  getDailyUsage,
   getPipelineStatus,
   getRunSuggestions,
   startPipelineRun,
   stopPipelineRun,
 } from '@/app/runActions';
 import type { RunStatus } from '@/lib/pipelineRunner';
+import type { DailyUsage } from '@/app/runActions';
 import { Play, Shuffle, Square, Loader2, MapPin, Briefcase, CheckCircle2, AlertCircle, Terminal } from 'lucide-react';
 
 interface RunPanelProps {
@@ -25,12 +27,16 @@ export default function RunPanel({ onRunFinished }: RunPanelProps) {
   const [error, setError] = useState<string | null>(null);
   const [isStarting, setIsStarting] = useState(false);
   const [showLog, setShowLog] = useState(false);
+  const [usage, setUsage] = useState<DailyUsage | null>(null);
+
+  const refreshUsage = () => getDailyUsage().then(setUsage).catch(() => {});
   const wasRunning = useRef(false);
   const logRef = useRef<HTMLPreElement>(null);
 
   // Suggestions for the inputs, plus pick up a run that was started before this page loaded
   useEffect(() => {
     getRunSuggestions().then(setSuggestions).catch(() => {});
+    refreshUsage();
     getPipelineStatus().then((s) => {
       setStatus(s);
       wasRunning.current = s.running;
@@ -45,7 +51,10 @@ export default function RunPanel({ onRunFinished }: RunPanelProps) {
     const timer = setInterval(async () => {
       const next = await getPipelineStatus();
       setStatus(next);
-      if (wasRunning.current && !next.running) onRunFinished();
+      if (wasRunning.current && !next.running) {
+        onRunFinished();
+        refreshUsage();
+      }
       wasRunning.current = next.running;
     }, POLL_MS);
     return () => clearInterval(timer);
@@ -58,7 +67,7 @@ export default function RunPanel({ onRunFinished }: RunPanelProps) {
   const start = async (mode: 'target' | 'random') => {
     setError(null);
     setIsStarting(true);
-    const res = await startPipelineRun({ mode, city, niche, quota });
+    const res = await startPipelineRun({ mode, city, niche, quota: Math.min(quota, maxQuota) });
     setIsStarting(false);
     if (!res.ok || !res.status) {
       setError(res.error || 'Could not start the pipeline.');
@@ -69,6 +78,9 @@ export default function RunPanel({ onRunFinished }: RunPanelProps) {
   };
 
   const request = status?.request;
+  const capReached = usage?.left === 0;
+  const maxQuota = Math.min(100, usage?.left ?? 100);
+  const runQuota = status?.effectiveQuota ?? request?.quota ?? 0;
   const lastLine = status?.logLines[status.logLines.length - 1];
   const ended = !!status && !status.running && !!status.finishedAt;
   const stopped = ended && status.stoppedByUser;
@@ -83,6 +95,20 @@ export default function RunPanel({ onRunFinished }: RunPanelProps) {
             Type any city and business type, or hit Random. With Random, a field you fill in stays fixed and blank ones are shuffled.
           </p>
         </div>
+        {usage && (
+          <span
+            className={`rounded-md border px-2.5 py-1 text-xs ${
+              capReached
+                ? 'border-amber-500/40 bg-amber-500/10 text-amber-300'
+                : 'border-slate-700 bg-slate-800/60 text-slate-300'
+            }`}
+            title="New leads saved today across all runs (DAILY_LEAD_CAP in .env)"
+          >
+            Today: {usage.today}
+            {usage.cap > 0 ? ` / ${usage.cap}` : ''} leads
+            {capReached ? ' · daily cap reached' : usage.left != null ? ` · ${usage.left} left` : ''}
+          </span>
+        )}
       </div>
 
       <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-[1fr_1fr_110px_auto]">
@@ -127,7 +153,7 @@ export default function RunPanel({ onRunFinished }: RunPanelProps) {
           <input
             type="number"
             min={1}
-            max={100}
+            max={Math.max(1, maxQuota)}
             value={quota}
             onChange={(e) => setQuota(Number(e.target.value))}
             disabled={running}
@@ -148,7 +174,7 @@ export default function RunPanel({ onRunFinished }: RunPanelProps) {
             <>
               <button
                 onClick={() => start('target')}
-                disabled={isStarting || !city.trim() || !niche.trim()}
+                disabled={isStarting || capReached || !city.trim() || !niche.trim()}
                 className="inline-flex items-center gap-1.5 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-500 disabled:cursor-not-allowed disabled:opacity-40"
                 title="Find leads for exactly this city and niche"
               >
@@ -157,7 +183,7 @@ export default function RunPanel({ onRunFinished }: RunPanelProps) {
               </button>
               <button
                 onClick={() => start('random')}
-                disabled={isStarting}
+                disabled={isStarting || capReached}
                 className="inline-flex items-center gap-1.5 rounded-lg border border-violet-500/40 bg-violet-500/10 px-4 py-2 text-sm font-medium text-violet-300 hover:bg-violet-500/20 disabled:opacity-40"
                 title="Shuffle random cities and niches until the lead count is reached"
               >
@@ -201,14 +227,14 @@ export default function RunPanel({ onRunFinished }: RunPanelProps) {
               </span>
             </div>
             <span className="font-semibold text-white">
-              {status.inserted} / {request.quota} new leads
+              {status.inserted} / {runQuota} new leads
             </span>
           </div>
 
           <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-slate-800">
             <div
               className="h-full bg-gradient-to-r from-indigo-500 to-violet-500 transition-all duration-500"
-              style={{ width: `${Math.min(100, (status.inserted / Math.max(1, request.quota)) * 100)}%` }}
+              style={{ width: `${Math.min(100, (status.inserted / Math.max(1, runQuota)) * 100)}%` }}
             />
           </div>
 
@@ -218,9 +244,14 @@ export default function RunPanel({ onRunFinished }: RunPanelProps) {
               {status.errorLines.join('\n')}
             </pre>
           )}
-          {ended && !failed && !stopped && status.inserted < request.quota && (
+          {ended && status.completed && status.effectiveQuota === 0 && (
             <p className="mt-2 text-xs text-amber-300/80">
-              Ran out of new businesses before reaching {request.quota}. Try another city or niche, or Random.
+              Daily cap already reached, so nothing was scraped. Raise DAILY_LEAD_CAP in .env to allow more.
+            </p>
+          )}
+          {ended && !failed && !stopped && runQuota > 0 && status.inserted < runQuota && (
+            <p className="mt-2 text-xs text-amber-300/80">
+              Ran out of new businesses before reaching {runQuota}. Try another city or niche, or Random.
             </p>
           )}
 

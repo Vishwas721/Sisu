@@ -30,6 +30,10 @@ class Config:
     # Discovery settings (optional: without a key only OpenStreetMap is used)
     GOOGLE_PLACES_API_KEY: str = os.getenv("GOOGLE_PLACES_API_KEY", "")
 
+    # Most new leads saved per calendar day across all runs (0 = no limit). Keep it near
+    # what you can actually email; a new sending domain should start around 10-20/day
+    DAILY_LEAD_CAP: int = int(os.getenv("DAILY_LEAD_CAP", "30"))
+
     # Scraper settings
     PLAYWRIGHT_HEADLESS: bool = os.getenv("PLAYWRIGHT_HEADLESS", "true").lower() in ("true", "1", "yes")
     PAGE_TIMEOUT_MS: int = int(os.getenv("PAGE_TIMEOUT_MS", "30000"))

@@ -483,6 +483,23 @@ async def run_pipeline(
             logger.info(f"Test run completed: {res}")
             return
 
+        # Daily cap across all runs today
+        if config.DAILY_LEAD_CAP > 0:
+            saved_today = await db.count_leads_today()
+            left_today = max(0, config.DAILY_LEAD_CAP - saved_today)
+            if left_today == 0:
+                logger.warning(
+                    f"[DAILY CAP] Already saved {saved_today} leads today (cap {config.DAILY_LEAD_CAP}). "
+                    f"Nothing to do until tomorrow; raise DAILY_LEAD_CAP in .env to change it."
+                )
+                logger.info(f"[DAILY CAP] today={saved_today} cap={config.DAILY_LEAD_CAP} run_quota=0")
+                logger.info(f"[RUN COMPLETE] inserted=0 quota=0")
+                return
+            if daily_quota > left_today:
+                logger.info(f"[DAILY CAP] {saved_today}/{config.DAILY_LEAD_CAP} saved today; this run is limited to {left_today}.")
+                daily_quota = left_today
+            logger.info(f"[DAILY CAP] today={saved_today} cap={config.DAILY_LEAD_CAP} run_quota={daily_quota}")
+
         if mode == "target":
             if not (city_override and niche_override):
                 raise ValueError("--mode target needs both --city and --niche")

@@ -55,6 +55,16 @@ class Database:
             )
             return bool(val)
 
+    async def count_leads_today(self) -> int:
+        """New leads saved since midnight (database server time); disqualified ones don't count."""
+        if not self.pool:
+            await self.connect()
+        async with self.pool.acquire() as conn:
+            return await conn.fetchval(
+                "SELECT COUNT(*) FROM leads WHERE status <> 'disqualified' "
+                "AND created_at >= date_trunc('day', now())"
+            )
+
     async def get_existing_keys(self) -> Set[str]:
         """All stored dedupe keys, used to filter discovery results before scraping."""
         if not self.pool:

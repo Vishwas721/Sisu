@@ -17,6 +17,7 @@ import {
   Wrench,
   Cpu,
   Share2,
+  Phone,
 } from 'lucide-react';
 
 interface LeadCardProps {
@@ -85,7 +86,9 @@ export default function LeadCard({ lead, index, onContacted }: LeadCardProps) {
       `Website: ${lead.website_url || 'None (Social Media Only)'}`,
       `Contact Channels:`,
       `  • Email: ${lead.email || 'None discovered'}`,
+      `  • Phone: ${lead.phone || 'None discovered'}`,
       `  • Instagram: ${lead.instagram_url || 'None discovered'}`,
+      `  • Facebook: ${lead.facebook_url || 'None discovered'}`,
       `  • LinkedIn: ${lead.linkedin_url || 'None discovered'}`,
       ``,
       `--- AI Outreach Draft (${strategy}) ---`,
@@ -180,6 +183,15 @@ export default function LeadCard({ lead, index, onContacted }: LeadCardProps) {
               #{index + 1}
             </span>
 
+            {lead.lead_score != null && (
+              <span
+                className="rounded-md bg-slate-800 px-2 py-0.5 text-xs font-semibold text-slate-300"
+                title="Lead score: how much this business would gain from your work"
+              >
+                Score {lead.lead_score}
+              </span>
+            )}
+
             {/* Campaign Strategy Colored Pill/Badge */}
             {strategy === 'no_website' && (
               <span className="inline-flex items-center gap-1 rounded-full bg-fuchsia-500/10 px-2.5 py-0.5 text-xs font-semibold text-fuchsia-400 border border-fuchsia-500/25">
@@ -235,7 +247,9 @@ export default function LeadCard({ lead, index, onContacted }: LeadCardProps) {
               className="mt-1 inline-flex items-center gap-1 text-xs font-mono text-fuchsia-400/90 hover:text-fuchsia-300 transition-colors"
             >
               <Share2 className="h-3 w-3 text-fuchsia-500 shrink-0" />
-              <span className="truncate max-w-[240px]">Social Profile Presence Only</span>
+              <span className="truncate max-w-[240px]">
+                No website ({lead.website_url?.includes('google.') ? 'Google listing' : 'social profile'} only)
+              </span>
               <ExternalLink className="h-2.5 w-2.5 opacity-60" />
             </a>
           ) : (
@@ -262,6 +276,25 @@ export default function LeadCard({ lead, index, onContacted }: LeadCardProps) {
             <span className="inline-flex items-center gap-1.5 rounded-md bg-slate-800/40 px-2 py-1 text-xs text-slate-500 border border-slate-800">
               <Mail className="h-3 w-3 opacity-40" />
               <span>No email</span>
+            </span>
+          )}
+
+          {/* Phone Badge */}
+          {lead.phone && (
+            <a
+              href={`tel:${lead.phone.replace(/[^\d+]/g, '')}`}
+              className="inline-flex items-center gap-1.5 rounded-md bg-sky-500/10 px-2.5 py-1 text-xs font-medium text-sky-400 border border-sky-500/20 hover:bg-sky-500/20 transition-colors"
+              title={lead.phone}
+            >
+              <Phone className="h-3 w-3 shrink-0" />
+              <span>{lead.phone}</span>
+            </a>
+          )}
+
+          {/* Google rating, a sign the business is established and has budget */}
+          {lead.rating != null && lead.review_count != null && (
+            <span className="inline-flex items-center gap-1 rounded-md bg-amber-500/10 px-2.5 py-1 text-xs font-medium text-amber-300 border border-amber-500/20">
+              ★ {Number(lead.rating).toFixed(1)} ({lead.review_count})
             </span>
           )}
 

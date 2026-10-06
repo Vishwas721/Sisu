@@ -411,7 +411,10 @@ class WebExtractor:
 
             # If no emails found on homepage, check /contact or /about
             if not result["emails"]:
-                contact_link = await page.query_selector('a[href*="contact" i], a[href*="about" i]')
+                contact_link = (
+                    await page.query_selector('a[href*="contact" i]')
+                    or await page.query_selector('a[href*="about" i]')
+                )
                 if contact_link:
                     try:
                         contact_href = await contact_link.get_attribute("href")

@@ -53,6 +53,12 @@ def _observation(issue: str, lead: Dict[str, Any]) -> Optional[Tuple[str, str, s
     looking_for = _niche_phrase(lead.get("niche"))
     city = lead.get("city") or "your area"
 
+    if issue == "site_errors":
+        return (
+            f"error messages on {site}",
+            f"When I opened {site}, the page showed a block of WordPress/PHP error messages instead of the normal site.",
+            "Visitors see that first, and most will assume the business is closed or not looking after things.",
+        )
     if issue == "no_viewport":
         return (
             f"{name}'s site on phones",
@@ -107,7 +113,7 @@ OFFERS = {
 }
 
 # Order in which issues make the strongest opener
-ISSUE_PRIORITY = ["no_website", "no_viewport", "http", "old_copyright", "no_booking", "manual_form", "slow_load"]
+ISSUE_PRIORITY = ["no_website", "site_errors", "no_viewport", "http", "old_copyright", "no_booking", "manual_form", "slow_load"]
 
 def _pick_issue(issues: List[str], strategy: str) -> str:
     for wanted in ISSUE_PRIORITY:

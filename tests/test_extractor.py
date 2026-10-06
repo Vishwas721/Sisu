@@ -64,3 +64,9 @@ def test_decode_cfemail():
     encoded = f"{key:02x}" + "".join(f"{ord(c) ^ key:02x}" for c in "info@smile.com")
     assert decode_cfemail(encoded) == "info@smile.com"
     assert decode_cfemail("zz") is None
+
+def test_visible_php_errors_are_the_top_issue(ex):
+    html = page(VIEWPORT, f"<br /><b>Notice</b>:  Function _load_textdomain_just_in_time was called incorrectly <p>&copy; {YEAR}</p>")
+    result = ex.evaluate_strategy(html, "https://a.com")
+    assert result["strategy"] == "legacy_redesign"
+    assert result["issues"][0] == "site_errors"

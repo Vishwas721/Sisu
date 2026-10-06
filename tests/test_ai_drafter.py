@@ -51,3 +51,8 @@ def test_niche_reads_naturally():
     assert "looking for an HVAC company in Austin" in body
     _, body = build_email(lead(niche="optometrist", issues=["no_booking"]), "ai_automation")
     assert "look for an optometrist" in body
+
+def test_site_errors_pitch():
+    subject, body = build_email(lead(issues=["no_viewport", "site_errors"]), "legacy_redesign")
+    assert "error messages" in subject
+    assert "error messages instead of the normal site" in body

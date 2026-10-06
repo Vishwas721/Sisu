@@ -21,6 +21,7 @@ STALE_COPYRIGHT_YEARS = 3
 
 # How much each problem makes a business worth pitching. Leads below MIN_LEAD_SCORE are dropped.
 ISSUE_WEIGHTS = {
+    "site_errors": 45,
     "no_viewport": 35,
     "http": 30,
     "old_copyright": 25,
@@ -32,6 +33,10 @@ ISSUE_WEIGHTS = {
     "no_og": 2,
 }
 MIN_LEAD_SCORE = 20
+PHP_ERROR_PATTERN = re.compile(
+    r"<b>(?:Notice|Warning|Deprecated|Fatal error|Parse error)</b>:|There has been a critical error on this website",
+    re.IGNORECASE
+)
 # Businesses with no website at all are the easiest pitch
 NO_WEBSITE_SCORE = 50
 
@@ -159,6 +164,12 @@ class WebExtractor:
         # ======================================================================
         # Condition A: legacy_redesign
         # ======================================================================
+        # PHP/WordPress errors printed into the page are visible to every visitor
+        if PHP_ERROR_PATTERN.search(html):
+            flaws.append("Website displays PHP / WordPress error messages to visitors")
+            issues.append("site_errors")
+            score += ISSUE_WEIGHTS["site_errors"]
+
         is_http = url.lower().startswith("http://")
         if is_http:
             flaws.append("Insecure HTTP protocol / missing SSL certificate")
@@ -188,7 +199,7 @@ class WebExtractor:
             issues.append(f"old_copyright:{newest_year}")
             score += ISSUE_WEIGHTS["old_copyright"]
 
-        if is_http or not has_viewport or has_old_copyright:
+        if "site_errors" in issues or is_http or not has_viewport or has_old_copyright:
             logger.info(f"[STRATEGY EVAL] Assigned 'legacy_redesign' for {url} (HTTP: {is_http}, No Viewport: {not has_viewport}, Old Copyright: {has_old_copyright})")
             return {"strategy": "legacy_redesign", "flaws": flaws, "score": score, "issues": issues}
 

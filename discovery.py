@@ -156,9 +156,10 @@ def discover_leads(city: str, niche: str, limit: int = 10, bbox: Optional[str] =
     logger.info(f"Discovering leads for niche='{niche}' in city='{city}' (limit={limit}, bbox={bbox})...")
     query = build_overpass_query(city, niche, limit, bbox=bbox)
 
+    # Overpass usage policy asks clients to identify themselves rather than pose as a browser
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Accept": "*/*"
+        "User-Agent": "SisuLeadPipeline/1.0 (+https://github.com/Vishwas721/Sisu)",
+        "Accept": "application/json"
     }
 
     raw_elements = []

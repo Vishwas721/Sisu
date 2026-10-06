@@ -217,6 +217,10 @@ async def process_single_lead(
         scraped_data = await extractor.scrape_lead(url, business_name=name)
         strategy = scraped_data.get("campaign_strategy", "legacy_redesign")
 
+    if strategy == "not_a_lead":
+        logger.info(f"[NOT A LEAD] '{name}' ({url}) has a modern site with online booking (score {scraped_data.get('lead_score')}). Skipping.")
+        return {"status": "not_a_lead", "lead_id": None, "url": url, "business_name": name}
+
     # Merge any emails already discovered from OSM with scraped emails
     all_emails = list(set(lead.get("initial_emails", []) + scraped_data.get("emails", [])))
     instagram_url = scraped_data.get("instagram_url") or lead.get("instagram_url")

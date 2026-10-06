@@ -19,6 +19,22 @@ IGNORE_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.gif', '.svg', '.webp', '.bmp', '
 # A footer this many years behind the current year counts as neglected
 STALE_COPYRIGHT_YEARS = 3
 
+# How much each problem makes a business worth pitching. Leads below MIN_LEAD_SCORE are dropped.
+ISSUE_WEIGHTS = {
+    "no_viewport": 35,
+    "http": 30,
+    "old_copyright": 25,
+    "no_booking": 20,
+    "manual_form": 15,
+    "slow_load": 10,
+    "no_meta_description": 5,
+    "low_text": 5,
+    "no_og": 2,
+}
+MIN_LEAD_SCORE = 20
+# Businesses with no website at all are the easiest pitch
+NO_WEBSITE_SCORE = 50
+
 # Placeholder and tracking domains that show up in page source but are never a business inbox.
 # Matched against the email's domain (and its parent domains), never as a substring of the whole address.
 IGNORE_DOMAINS = {
@@ -102,14 +118,18 @@ class WebExtractor:
             return None
         return f"https://{parsed.netloc}/{path}"
 
-    def evaluate_strategy(self, html: str, url: str) -> Tuple[str, List[str]]:
+    def evaluate_strategy(self, html: str, url: str) -> Dict[str, Any]:
         """
-        Evaluate DOM and URL protocol to assign campaign strategy:
-        - Condition A (legacy_redesign): http:// protocol, copyright < 2022, or missing viewport meta.
-        - Condition B (ai_automation): Modern & secure site, but uses manual forms instead of automated scheduling widgets.
+        Score how much this business would benefit from web work and pick a pitch:
+        - legacy_redesign: http://, no mobile viewport, or a stale copyright footer.
+        - ai_automation: modern site, but no online booking (manual form or nothing at all).
+        Returns strategy, human-readable flaws, numeric score and machine-readable issue codes.
+        A modern site that already has online booking scores low and is filtered out later.
         """
         soup = BeautifulSoup(html, "html.parser")
-        flaws = []
+        flaws: List[str] = []
+        issues: List[str] = []
+        score = 0
 
         # ======================================================================
         # Condition A: legacy_redesign
@@ -117,11 +137,15 @@ class WebExtractor:
         is_http = url.lower().startswith("http://")
         if is_http:
             flaws.append("Insecure HTTP protocol / missing SSL certificate")
+            issues.append("http")
+            score += ISSUE_WEIGHTS["http"]
 
         viewport = soup.find("meta", attrs={"name": re.compile(r"^viewport$", re.I)})
         has_viewport = viewport is not None
         if not has_viewport:
             flaws.append("Missing mobile responsive viewport tag (<meta name='viewport'>)")
+            issues.append("no_viewport")
+            score += ISSUE_WEIGHTS["no_viewport"]
 
         # Copyright year extraction
         copyright_pattern = re.compile(
@@ -136,16 +160,23 @@ class WebExtractor:
 
         if has_old_copyright:
             flaws.append(f"Outdated copyright year ({newest_year}) indicates neglected website maintenance")
+            issues.append(f"old_copyright:{newest_year}")
+            score += ISSUE_WEIGHTS["old_copyright"]
 
         if is_http or not has_viewport or has_old_copyright:
             logger.info(f"[STRATEGY EVAL] Assigned 'legacy_redesign' for {url} (HTTP: {is_http}, No Viewport: {not has_viewport}, Old Copyright: {has_old_copyright})")
-            return "legacy_redesign", flaws
+            return {"strategy": "legacy_redesign", "flaws": flaws, "score": score, "issues": issues}
 
         # ======================================================================
         # Condition B: ai_automation
         # ======================================================================
         html_lower = html.lower()
         has_scheduling_widget = any(sig in html_lower for sig in self.SCHEDULING_SIGNATURES)
+
+        if has_scheduling_widget:
+            # Modern site that already takes bookings online: little to sell them
+            logger.info(f"[STRATEGY EVAL] {url} is modern and already has online booking")
+            return {"strategy": "ai_automation", "flaws": flaws, "score": score, "issues": issues}
 
         # Detect standard manual form elements
         has_manual_form = False
@@ -165,15 +196,17 @@ class WebExtractor:
                 has_manual_form = True
                 break
 
-        if has_manual_form and not has_scheduling_widget:
+        if has_manual_form:
             flaws.append("Manual contact forms cause lead drop-off / lacks 24/7 automated scheduling widget")
-            logger.info(f"[STRATEGY EVAL] Assigned 'ai_automation' for {url} (Manual forms found without scheduling widget)")
-            return "ai_automation", flaws
+            issues.append("manual_form")
+            score += ISSUE_WEIGHTS["manual_form"]
+        else:
+            flaws.append("No way to book or request an appointment online")
+            issues.append("no_booking")
+            score += ISSUE_WEIGHTS["no_booking"]
 
-        # Fallback for modern sites
-        flaws.append("Standard contact layout lacks 24/7 automated scheduling or AI receptionist")
-        logger.info(f"[STRATEGY EVAL] Assigned 'ai_automation' (Modern baseline) for {url}")
-        return "ai_automation", flaws
+        logger.info(f"[STRATEGY EVAL] Assigned 'ai_automation' for {url} (manual form: {has_manual_form})")
+        return {"strategy": "ai_automation", "flaws": flaws, "score": score, "issues": issues}
 
     async def _extract_from_page(self, page: Page, base_url: str) -> Dict[str, Any]:
         """Extract emails, socials, and technical details from page DOM."""
@@ -240,16 +273,20 @@ class WebExtractor:
 
         # General technical checks
         general_flaws = []
+        general_issues = []
         if not meta_desc:
             general_flaws.append("Missing search engine meta description")
+            general_issues.append("no_meta_description")
         if not has_og:
             general_flaws.append("Missing OpenGraph social preview tags")
+            general_issues.append("no_og")
         if len(body_text) < 150:
             general_flaws.append("Low text content / potential rendering or SEO indexation problem")
+            general_issues.append("low_text")
 
         # 4. Strategy Evaluation
-        strategy, strategy_flaws = self.evaluate_strategy(html_content, page.url or base_url)
-        all_flaws = strategy_flaws + general_flaws
+        evaluation = self.evaluate_strategy(html_content, page.url or base_url)
+        score = evaluation["score"] + sum(ISSUE_WEIGHTS[i] for i in general_issues)
 
         return {
             "emails": sorted(emails),
@@ -259,8 +296,10 @@ class WebExtractor:
             "meta_description": meta_desc,
             "headings": heading_text,
             "text_summary": body_text,
-            "technical_flaws": all_flaws,
-            "campaign_strategy": strategy,
+            "technical_flaws": evaluation["flaws"] + general_flaws,
+            "issues": evaluation["issues"] + general_issues,
+            "lead_score": score,
+            "campaign_strategy": evaluation["strategy"],
             "html_length": len(html_content)
         }
 
@@ -285,6 +324,8 @@ class WebExtractor:
                 "linkedin_url": None,
                 "raw_summary": f"Business Name: {business_name}. Active social media presence, but no active dedicated website.",
                 "technical_flaws": ["No dedicated business website found (relies entirely on social media profiles)"],
+                "issues": ["no_website"],
+                "lead_score": NO_WEBSITE_SCORE,
                 "scrape_status": "skipped_no_website",
                 "load_time_sec": 0.0,
                 "campaign_strategy": "no_website"
@@ -299,6 +340,8 @@ class WebExtractor:
             "linkedin_url": None,
             "raw_summary": "",
             "technical_flaws": [],
+            "issues": [],
+            "lead_score": 0,
             "scrape_status": "failed",
             "load_time_sec": 0.0,
             "campaign_strategy": "legacy_redesign"
@@ -331,6 +374,8 @@ class WebExtractor:
 
                 if load_time > 5.0:
                     result["technical_flaws"].append(f"Slow initial page load time ({load_time}s)")
+                    result["issues"].append("slow_load")
+                    result["lead_score"] += ISSUE_WEIGHTS["slow_load"]
 
                 await self._wait_for_render(page)
 
@@ -340,7 +385,12 @@ class WebExtractor:
                 result["instagram_url"] = page_data["instagram_url"]
                 result["linkedin_url"] = page_data["linkedin_url"]
                 result["technical_flaws"].extend(page_data["technical_flaws"])
+                # Lead with the strongest problems: page-level issues first, slow load after
+                result["issues"] = page_data["issues"] + result["issues"]
+                result["lead_score"] += page_data["lead_score"]
                 result["campaign_strategy"] = page_data["campaign_strategy"]
+                if result["lead_score"] < MIN_LEAD_SCORE:
+                    result["campaign_strategy"] = "not_a_lead"
 
                 # If no emails found on homepage, check /contact or /about
                 if not result["emails"]:
@@ -367,7 +417,7 @@ class WebExtractor:
                 summary_parts = [
                     f"Business Name: {business_name}",
                     f"Website: {target_url}",
-                    f"Assigned Campaign Strategy: {result['campaign_strategy']}",
+                    f"Assigned Campaign Strategy: {result['campaign_strategy']} (lead score {result['lead_score']})",
                     f"Page Title: {page_data['title']}",
                     f"Meta Description: {page_data['meta_description'] or 'None provided'}",
                     f"Key Headings: {page_data['headings'] or 'None'}",

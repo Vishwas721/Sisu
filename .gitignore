@@ -52,3 +52,6 @@ Thumbs.db
 # Local pipeline run state
 pipeline_state.json
 last_city.json
+
+# Pipeline run logs written by the dashboard
+logs/

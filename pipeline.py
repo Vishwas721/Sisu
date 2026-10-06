@@ -18,6 +18,8 @@ from email_validation import filter_deliverable
 # Pipeline Configuration & Constants
 # ==============================================================================
 DAILY_QUOTA = 15
+# Pages scraped in parallel on the shared browser
+SCRAPE_CONCURRENCY = 4
 STATE_FILE = Path(__file__).parent / "pipeline_state.json"
 LEGACY_STATE_FILE = Path(__file__).parent / "last_city.json"
 
@@ -431,7 +433,9 @@ async def run_pipeline(
             # Extract sufficient candidates so duplicates don't prematurely exhaust the batch
             discovery_limit = max(30, remaining_quota * 3)
             existing_keys = await db.get_existing_keys()
-            leads_to_process = discover_leads(
+            # discover_leads does blocking HTTP; keep it off the event loop
+            leads_to_process = await asyncio.to_thread(
+                discover_leads,
                 city=current_city,
                 niche=current_niche,
                 limit=discovery_limit,
@@ -448,7 +452,7 @@ async def run_pipeline(
 
             if not leads_to_process:
                 logger.warning(
-                    f"[TARGET EXHAUSTED] No candidate leads found for '{current_city}' + '{current_niche}' via Overpass API."
+                    f"[TARGET EXHAUSTED] No candidate leads found for '{current_city}' + '{current_niche}' (Google Places / Overpass)."
                 )
                 save_state(
                     STATE_FILE,
@@ -470,30 +474,33 @@ async def run_pipeline(
             )
 
             target_insertions_start = successful_insertions
-            target_exhausted = True
 
-            for idx, lead in enumerate(leads_to_process, 1):
-                if successful_insertions >= daily_quota:
-                    target_exhausted = False
-                    break
+            processed = 0
+            while processed < len(leads_to_process) and successful_insertions < daily_quota:
+                # Never run more leads at once than the quota still needs, so it can't overshoot
+                batch_size = min(SCRAPE_CONCURRENCY, daily_quota - successful_insertions)
+                batch = leads_to_process[processed:processed + batch_size]
+                for offset, lead in enumerate(batch, processed + 1):
+                    logger.info(f"[{current_city} | {current_niche}] Processing Lead {offset}/{len(leads_to_process)}: '{lead['business_name']}'")
+                results = await asyncio.gather(
+                    *(process_single_lead(lead, db, extractor, ai_engine) for lead in batch),
+                    return_exceptions=True
+                )
+                processed += len(batch)
 
-                logger.info(f"[{current_city} | {current_niche}] Processing Lead {idx}/{len(leads_to_process)}: '{lead['business_name']}'")
-                res = await process_single_lead(lead, db, extractor, ai_engine)
-
-                # State Tracking: Only actual insertions count toward daily quota
-                if res.get("status") == "inserted" and res.get("lead_id"):
-                    successful_insertions += 1
-                    logger.info(f"★ [QUOTA PROGRESS] Lead inserted [ID: {res['lead_id']}]: '{res['business_name']}' ({successful_insertions}/{daily_quota})")
-                else:
-                    logger.info(f"○ [QUOTA PROGRESS] Skipped lead '{res.get('business_name', 'Unknown')}' ({res.get('status')}) - does not count toward quota.")
-
-                # If we just reached the quota, evaluate if target still has leads remaining
-                if successful_insertions >= daily_quota:
-                    if idx < len(leads_to_process):
-                        target_exhausted = False
+                for lead, res in zip(batch, results):
+                    if isinstance(res, Exception):
+                        logger.error(f"Unexpected error processing '{lead['business_name']}': {res}")
+                        continue
+                    # State Tracking: Only actual insertions count toward daily quota
+                    if res.get("status") == "inserted" and res.get("lead_id"):
+                        successful_insertions += 1
+                        logger.info(f"★ [QUOTA PROGRESS] Lead inserted [ID: {res['lead_id']}]: '{res['business_name']}' ({successful_insertions}/{daily_quota})")
                     else:
-                        target_exhausted = True
-                    break
+                        logger.info(f"○ [QUOTA PROGRESS] Skipped lead '{res.get('business_name', 'Unknown')}' ({res.get('status')}) - does not count toward quota.")
+
+            # Unprocessed candidates remain if the quota was hit mid-list; resume here next run
+            target_exhausted = processed >= len(leads_to_process)
 
             target_new_leads = successful_insertions - target_insertions_start
             logger.info(f"Target '{current_city}' + '{current_niche}' session summary: {target_new_leads} new leads inserted.")
@@ -557,6 +564,7 @@ async def run_pipeline(
             logger.info("  " + "-"*50)
 
     finally:
+        await extractor.close()
         await db.close()
 
 # ==============================================================================

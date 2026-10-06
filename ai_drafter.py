@@ -50,20 +50,20 @@ def _observation(issue: str, lead: Dict[str, Any]) -> Optional[Tuple[str, str, s
     """(subject, observation sentence, why-it-matters sentence) for one issue code."""
     name = lead.get("business_name") or "your business"
     site = _site_label(lead.get("website_url", ""))
-    niche = lead.get("niche") or "business"
+    looking_for = _niche_phrase(lead.get("niche"))
     city = lead.get("city") or "your area"
 
     if issue == "no_viewport":
         return (
             f"{name}'s site on phones",
             f"I pulled up {site} on my phone and it loads the desktop layout shrunk down, so you have to pinch and zoom to read anything.",
-            f"Most people looking for a {niche} in {city} are searching on their phone, and Google ranks sites that aren't mobile-friendly lower too.",
+            f"Most people looking for {looking_for} in {city} are searching on their phone, and Google ranks sites that aren't mobile-friendly lower too.",
         )
     if issue == "http":
         return (
             f"\"Not secure\" warning on {site}",
             f"When I opened {site}, Chrome showed a \"Not secure\" warning next to the address because the site doesn't have an SSL certificate.",
-            f"That warning makes a lot of people back out before they ever call, especially when they're comparing a few {niche}s.",
+            f"That warning makes a lot of people back out before they ever call, especially when they're comparing a few options.",
         )
     if issue.startswith("old_copyright:"):
         year = issue.split(":", 1)[1]
@@ -84,7 +84,7 @@ def _observation(issue: str, lead: Dict[str, Any]) -> Optional[Tuple[str, str, s
         return (
             f"online booking for {name}",
             f"I couldn't find a way to book or request an appointment on {site}; the only option is to call.",
-            f"Lots of people look for a {niche} in the evening or on a lunch break and just book with whoever lets them do it online.",
+            f"Lots of people look for {looking_for} in the evening or on a lunch break and just book with whoever lets them do it online.",
         )
     if issue == "manual_form":
         return (
@@ -95,7 +95,7 @@ def _observation(issue: str, lead: Dict[str, Any]) -> Optional[Tuple[str, str, s
     if issue == "no_website":
         return (
             f"website for {name}?",
-            f"I was looking for a {niche} in {city} and found {name} online{_review_praise(lead)}, but couldn't find a website for you.",
+            f"I was looking for {looking_for} in {city} and found {name} online{_review_praise(lead)}, but couldn't find a website for you.",
             "Without one, a lot of people who hear about you and search your name end up on a competitor's site instead.",
         )
     return None

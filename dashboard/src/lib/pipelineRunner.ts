@@ -23,6 +23,8 @@ export interface RunStatus {
   finishedAt: string | null;
   exitCode: number | null;
   inserted: number;
+  // Run size after the pipeline applied the daily cap (null until it reports it)
+  effectiveQuota: number | null;
   currentTarget: { city: string; niche: string } | null;
   completed: boolean;
   stoppedByUser: boolean;
@@ -56,6 +58,7 @@ const state: RunnerState =
       finishedAt: null,
       exitCode: null,
       inserted: 0,
+      effectiveQuota: null,
       currentTarget: null,
       completed: false,
       stoppedByUser: false,
@@ -89,6 +92,9 @@ function handleLine(raw: string) {
 
   const progress = line.match(/★ \[QUOTA PROGRESS\].*\((\d+)\/\d+\)$/);
   if (progress) state.status.inserted = parseInt(progress[1], 10);
+
+  const cap = line.match(/\[DAILY CAP\] today=\d+ cap=\d+ run_quota=(\d+)/);
+  if (cap) state.status.effectiveQuota = parseInt(cap[1], 10);
 
   const complete = line.match(/\[RUN COMPLETE\] inserted=(\d+)/);
   if (complete) {
@@ -135,6 +141,7 @@ export function startRun(request: RunRequest): RunStatus {
     finishedAt: null,
     exitCode: null,
     inserted: 0,
+    effectiveQuota: null,
     currentTarget: null,
     completed: false,
     stoppedByUser: false,
@@ -186,6 +193,18 @@ export function stopRun(): void {
 
 export function getStatus(): RunStatus {
   return { ...state.status, logLines: state.lines.slice(-40) };
+}
+
+/** DAILY_LEAD_CAP from the pipeline's .env (only that key is read); 0 means no cap. */
+export function readDailyCap(): number {
+  try {
+    const env = fs.readFileSync(path.join(REPO_ROOT, '.env'), 'utf-8');
+    const match = env.match(/^\s*DAILY_LEAD_CAP\s*=\s*(\d+)/m);
+    if (match) return parseInt(match[1], 10);
+  } catch {
+    // no .env: fall through to the pipeline's default
+  }
+  return 30;
 }
 
 export function getTargetSuggestions(): { cities: string[]; niches: string[] } {

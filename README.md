@@ -18,6 +18,7 @@ flowchart TD
 ```
 
 ### Discovery (`discovery.py`)
+- **Any city**: names in `targets.json` use their stored bounding box; anything else is geocoded with OpenStreetMap Nominatim.
 - **Google Places (New) Text Search** when `GOOGLE_PLACES_API_KEY` is set: best coverage, plus phone, rating and review count. Places without a website become `no_website` leads reachable by phone.
 - **OpenStreetMap (Overpass)** always, as a free fallback, with mirror failover.
 - Chains/franchises (OSM `brand` tag) are skipped. Known businesses are excluded *before* the per-run limit, so each run reaches further into a city instead of returning the same first results.
@@ -28,6 +29,7 @@ Each site is loaded in a shared Chromium (waiting for JS-rendered content), then
 
 | Issue | Weight | Pitch |
 |---|---|---|
+| Page shows PHP/WordPress error messages | 45 | redesign |
 | No mobile viewport | 35 | redesign |
 | Plain `http://` (no SSL) | 30 | redesign |
 | Copyright footer 3+ years old | 25 | redesign |
@@ -47,36 +49,65 @@ Drafts are template-based by default. Set `USE_LLM_DRAFTS=true` to have Ollama r
 
 ---
 
+## 🚀 Quick start (Windows)
+
+Double-click **`start.bat`** (or run it from a terminal). It:
+
+1. creates `.env` from `.env.example` on first run and opens it for you to fill in,
+2. creates `.venv` and installs Python packages and Chromium (only when needed),
+3. checks PostgreSQL is running (and tries to start its service if not),
+4. creates/updates the database schema,
+5. starts Ollama if `USE_LLM_DRAFTS=true`,
+6. installs dashboard packages on first run, starts the dashboard on http://127.0.0.1:3000 and opens your browser.
+
+Close the window or press Ctrl+C to stop.
+
+### Finding leads from the dashboard
+
+At the top of the dashboard:
+
+- **Run**: type any city (anywhere; cities outside `targets.json` are geocoded automatically) and any business type, choose how many leads you want, and press Run. It only searches that city + niche and stops when it runs out.
+- **Random**: shuffles random city/niche pairs from `targets.json` until the lead count is reached. Fill in one field to keep it fixed, e.g. city "Austin" + Random tries random niches in Austin.
+- Progress, the current city/niche and the live log show while it runs; **Stop** cancels. New leads appear when it finishes.
+
+Edit `targets.json` to change the cities and niches used by Random and the input suggestions.
+
+---
+
 ## 📦 Requirements
 
-- Python 3.10+
-- PostgreSQL 14+
+- Python 3.10+, Node.js 20+, PostgreSQL 14+
 - Optional: a Google Cloud API key with **Places API (New)** enabled (billed per request)
 - Optional: Ollama, only if `USE_LLM_DRAFTS=true`
+
+Manual setup (what `start.bat` automates):
 
 ```bash
 pip install -r requirements.txt
 playwright install chromium
 cp .env.example .env   # then fill in DB_PASSWORD, SENDER_ADDRESS, GOOGLE_PLACES_API_KEY
+cd dashboard && npm install && npm run dev -- -H 127.0.0.1
 ```
 
 ---
 
-## 🛠 Usage
+## 🛠 Command line
 
 ```bash
-# Daily run: continues the city x niche rotation until 15 new leads are saved
-python pipeline.py
+# One city + niche (any city name)
+python pipeline.py --mode target --city "Boise" --niche "dentist" --quota 10
 
-# Start from a specific city / niche, or change the quota
-python pipeline.py --city "Austin" --niche "dentist" --quota 25
+# Random city/niche pairs until 15 leads; --city or --niche keeps that one fixed
+python pipeline.py --mode random --quota 15
+python pipeline.py --mode random --city "Austin"
+
+# Original fixed rotation through targets.json, remembering its position between runs
+python pipeline.py
+python pipeline.py --force-next     # skip to the next city/niche
+python pipeline.py --reset-state    # start the rotation over
 
 # Scrape and score a single site
 python pipeline.py --test-url "https://example.com"
-
-# Rotation controls
-python pipeline.py --force-next     # skip to the next city/niche
-python pipeline.py --reset-state    # start the rotation over
 ```
 
 ### Tests
@@ -86,13 +117,7 @@ pytest                    # offline unit tests (scoring, email cleaning, discove
 python test_pipeline.py   # end-to-end smoke test; needs PostgreSQL and internet
 ```
 
-### Dashboard
-
-```bash
-cd dashboard && npm install && npm run dev
-```
-
-The dashboard has no login. Run it locally only.
+The dashboard has no login and can start scraping runs, so keep it bound to 127.0.0.1 (as `start.bat` does).
 
 ---
 

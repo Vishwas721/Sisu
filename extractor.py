@@ -257,7 +257,6 @@ class WebExtractor:
             }
 
         logger.info(f"Scraping lead [{business_name}]: {target_url}")
-        start_time = time.time()
         result: Dict[str, Any] = {
             "website_url": target_url,
             "business_name": business_name,
@@ -289,6 +288,8 @@ class WebExtractor:
             page = await context.new_page()
 
             try:
+                # Start timing after browser launch so Chromium startup isn't counted as page load
+                start_time = time.time()
                 response = await page.goto(target_url, wait_until="domcontentloaded", timeout=self.timeout_ms)
                 status_code = response.status if response else 0
                 load_time = round(time.time() - start_time, 2)
